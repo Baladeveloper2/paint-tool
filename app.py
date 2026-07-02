@@ -316,6 +316,16 @@ def main():
         
         try:
             with st.spinner("👆 AI is analyzing object..."):
+                st.markdown("""
+                    <div style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(255, 255, 255, 0.85); z-index: 999999; display: flex; flex-direction: column; justify-content: center; align-items: center; backdrop-filter: blur(4px);">
+                        <div style="width: 60px; height: 60px; border: 6px solid #e0e0e0; border-top: 6px solid #4CAF50; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+                        <h2 style="color: #333; margin-top: 20px; font-family: sans-serif; font-weight: 600;">Analyzing AI Mask...</h2>
+                        <style>
+                            @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+                            header[data-testid="stHeader"] { z-index: 0 !important; }
+                        </style>
+                    </div>
+                """, unsafe_allow_html=True)
                 print("✓ Processing Locked")
                 
                 parts = tap_param.split(",")
@@ -474,6 +484,16 @@ def main():
                     x_max, y_max = np.max(pts_arr, axis=0)
                     box = [x_min, y_min, x_max, y_max]
                     
+                    st.markdown("""
+                        <div style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(255, 255, 255, 0.85); z-index: 999999; display: flex; flex-direction: column; justify-content: center; align-items: center; backdrop-filter: blur(4px);">
+                            <div style="width: 60px; height: 60px; border: 6px solid #e0e0e0; border-top: 6px solid #4CAF50; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+                            <h2 style="color: #333; margin-top: 20px; font-family: sans-serif; font-weight: 600;">Analyzing AI Mask...</h2>
+                            <style>
+                                @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+                                header[data-testid="stHeader"] { z-index: 0 !important; }
+                            </style>
+                        </div>
+                    """, unsafe_allow_html=True)
                     if not getattr(sam, "is_image_set", False):
                         with st.spinner("🧠 Preparing AI for precision tools..."):
                             sam.set_image(img)
