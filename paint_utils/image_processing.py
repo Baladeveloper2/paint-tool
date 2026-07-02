@@ -4,6 +4,7 @@ import streamlit as st
 from PIL import Image
 from paint_core.colorizer import ColorTransferEngine
 from app_config.constants import UIConfig
+from scipy import sparse
 
 def get_crop_params(image_width, image_height, zoom_level, pan_x, pan_y):
     """

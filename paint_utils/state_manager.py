@@ -91,7 +91,23 @@ def cb_apply_pending(increment_canvas=True, silent=False):
 
         current_op = st.session_state.get("selection_op")
         num_masks = len(st.session_state["masks"])
+        
+        # Calculate pixel count safely
+        mask_array = new_mask['mask']
+        if sparse.issparse(mask_array):
+            pixel_count = mask_array.nnz
+        else:
+            pixel_count = np.sum(mask_array)
+            
         print(f"DEBUG: cb_apply_pending -> Operation: {current_op}, Existing masks: {num_masks}")
+        print(f"DEBUG: └─ Mask Area: {pixel_count} pixels")
+
+        # Requirement 9: If mask area is zero, abort rendering and display an error
+        if pixel_count == 0:
+            print("DEBUG: └─ ABORTED: Mask area is 0 pixels.")
+            st.toast("⚠️ Selected area is empty (0 pixels). Please try clicking elsewhere.", icon="🚫")
+            st.session_state["pending_selection"] = None
+            return
 
         # Compress mask to sparse matrix for storage
         if not sparse.issparse(new_mask['mask']):
@@ -143,7 +159,10 @@ def cb_apply_pending(increment_canvas=True, silent=False):
                     st.toast("⚠️ Nothing to erase! The canvas is clean.", icon="✨")
 
         else:
-            print(f"DEBUG: ADD mode -> Creating new layer")
+            # Requirement 8 & 11: Independent paint layer and Debugging logs
+            print(f"DEBUG: ADD mode -> Created Independent Paint Layer")
+            print(f"DEBUG: └─ Layer ID: {new_mask['name']}")
+            print(f"DEBUG: └─ Color Applied: {new_mask['color']}")
             st.session_state["masks"].append(new_mask)
 
         st.session_state["masks_redo"] = []

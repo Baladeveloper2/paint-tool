@@ -593,8 +593,6 @@ def render_zoom_controls(key_suffix="", context_class=""):
         key_suffix: Unique suffix for widget keys to prevent duplicates.
         context_class: CSS class for responsive hiding.
     """
-    import streamlit.components.v1 as _components
-
     if context_class:
         st.markdown(f'<div class="{context_class}">', unsafe_allow_html=True)
 
@@ -666,7 +664,7 @@ def render_zoom_controls(key_suffix="", context_class=""):
     </style>
     <button id="ag-reset-only-btn" aria-label="Reset View">🎯 Reset View</button>
     """
-    _components.html(reset_html, height=50, scrolling=False)
+    st.html(reset_html, unsafe_allow_javascript=True)
 
     if context_class:
         st.markdown('</div>', unsafe_allow_html=True)
@@ -689,7 +687,7 @@ def render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_
     # 🧼 TOOL SWITCH CLEANUP (Silent)
     if st.session_state.get("tool_switched_reset", False):
         st.session_state["tool_switched_reset"] = False
-        components.html("<script>if(window.parent.STREAMLIT_POLY_POINTS) window.parent.STREAMLIT_POLY_POINTS = [];</script>", height=0)
+        st.html("<script>if(window.parent.STREAMLIT_POLY_POINTS) window.parent.STREAMLIT_POLY_POINTS = [];</script>", unsafe_allow_javascript=True)
 
     # Signal ID Handling: Normalize signals to extract timestamp if present
     def extract_signal(raw_str):
@@ -951,7 +949,7 @@ def render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_
         p_box_json = str(p_box) if p_box else "null"
         
         js_config = f"<script>const cfg={{ CANVAS_WIDTH: {display_width}, CANVAS_HEIGHT: {display_height}, CUR_PAN_X: {st.session_state['pan_x']}, CUR_PAN_Y: {st.session_state['pan_y']}, ZOOM_LEVEL: {st.session_state.get('zoom_level', 1.0)}, VIEW_W: {view_w}, IMAGE_W: {w}, VIEW_H: {view_h}, IMAGE_H: {h}, DRAWING_MODE: '{drawing_mode}', PENDING_BOX: {p_box_json} }}; window.CANVAS_CONFIG=cfg; if(window.parent) window.parent.CANVAS_CONFIG=cfg;</script><script>{js_template}</script>"
-        components.html(js_config, height=0)
+        st.html(js_config, unsafe_allow_javascript=True)
 
     # 🔄 SYNC & PROCESS (Silent)
     # DEBUG: Force log raw canvas return
@@ -1202,7 +1200,7 @@ def render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_
                                 st.session_state["render_id"] += 1
                                 for pk in ["poly_pts", "force_finish", "tap"]:
                                     if pk in st.query_params: st.query_params.pop(pk, None)
-                                components.html("<script>window.parent.STREAMLIT_POLY_POINTS = [];</script>", height=0)
+                                st.html("<script>window.parent.STREAMLIT_POLY_POINTS = [];</script>", unsafe_allow_javascript=True)
                                 safe_rerun()
                             else:
                                 if force_finish: print(f"DEBUG: Skipping Poly Apply - Empty Mask")

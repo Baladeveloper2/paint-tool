@@ -7,6 +7,7 @@ import os
 import torch
 import warnings
 import logging
+import traceback
 
 # --- SILENCE DEPRECATION WARNINGS ---
 warnings.filterwarnings("ignore", category=FutureWarning, module="timm")
@@ -30,14 +31,14 @@ from paint_utils.sam_loader import get_sam_engine, ensure_model_exists, CHECKPOI
 from paint_utils.state_manager import initialize_session_state, cb_apply_pending
 from paint_utils.ui_components import setup_styles, render_sidebar, render_visualizer_engine_v11, TOOL_MAPPING
 from paint_utils.image_processing import get_crop_params, magic_wand_selection
-from paint_core.segmentation import SegmentationEngine, sam_model_registry
+from paint_core.ai_engine import AIEngine
 from app_config.constants import PerformanceConfig
 
 # --- 1️⃣ SESSION INITIALIZATION (VERY TOP)
 initialize_session_state()
 
 # --- WARNING SHIELD: Titanium Silence v4 ---
-st.components.v1.html("""
+st.html("""
     <!-- 📱 MOBILE OPTIMIZATION -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
     <script>
@@ -67,7 +68,7 @@ st.components.v1.html("""
             setInterval(run, 500);
         })();
     </script>
-""", height=0)
+""")
 
 def main():
     setup_styles()
@@ -160,6 +161,7 @@ def main():
                     }
                     st.session_state["masks"].append(new_mask_entry)
                     st.session_state["render_id"] += 1
+                    assert len(st.session_state["masks"]) > 0, "assert paint_applied failed"
 
             else:
                  st.toast("⚠️ No object detected.", icon="🤷‍♂️")
@@ -239,6 +241,7 @@ def main():
                               st.session_state["pending_selection"] = {'mask': accumulated_mask}
                               cb_apply_pending(increment_canvas=True)
                               st.session_state["render_id"] += 1
+                              assert len(st.session_state["masks"]) > 0, "assert paint_applied failed"
                               st.toast("✅ Paint Applied!", icon="🎨")
                          else:
                               st.toast("⚠️ No object detected.", icon="🤷‍♂️")
@@ -303,66 +306,18 @@ def main():
         # --- AI POINT HANDLER ---
         print(f"DEBUG: Processing Mobile Tap (AI) -> {tap_param}")
         
-        # Check if we are already processing this
-        from paint_utils.async_processor import submit_sam_task, check_async_task
-        async_status = check_async_task()
+        if st.session_state.get("ai_processing", False):
+            print("DEBUG: Duplicate Tap Ignored")
+            if "tap" in st.query_params: 
+                del st.query_params["tap"]
+            st.stop()
+            
+        st.session_state["ai_processing"] = True
         
-        if async_status == "running":
-            with st.status("👆 AI is analyzing object...", expanded=False):
-                st.write("Detecting boundaries...")
-                import time
-                from paint_utils.state_manager import preserve_sidebar_state
-                preserve_sidebar_state()
-                st.rerun()
-
-        elif isinstance(async_status, dict) and async_status.get("status") == "success":
-             # Success!
-             mask = async_status.get("mask")
-             
-             if mask is not None:
-                # Need to reconstruct point coords for pending selection metadata
-                # We can't easily get it from async_result unless we store it.
-                # But 'tap_param' is still here. Retreive coords again just for metadata.
-                # (Optimized: we could have returned it from async task but parsing is fast)
-                parts = tap_param.split(",")
-                # ... Skipping re-parsing for brevity, just use dummy or parse quickly
-                # Re-parsing is cheap:
-                x, y = int(parts[0].strip()), int(parts[1].strip())
-                 # Scaling logic... to get real_x, real_y...
-                 # Actually, let's just assume we want to apply it.
+        try:
+            with st.spinner("👆 AI is analyzing object..."):
+                print("✓ Processing Locked")
                 
-                # We need real coords for the 'point' metadata
-                img = st.session_state["image"]
-                h, w = img.shape[:2]
-                display_width = 800
-                zoom = st.session_state.get("zoom_level", 1.0)
-                pan_x = st.session_state.get("pan_x", 0.5)
-                pan_y = st.session_state.get("pan_y", 0.5)
-                start_x, start_y, view_w, view_h = get_crop_params(w, h, zoom, pan_x, pan_y)
-                scale_factor = display_width / view_w
-                real_x = int(x / scale_factor) + start_x
-                real_y = int(y / scale_factor) + start_y
-
-                st.session_state["pending_selection"] = {'mask': mask, 'point': (real_x, real_y)}
-                st.session_state["selection_op"] = st.session_state.get("selection_op", "Add")
-                cb_apply_pending(increment_canvas=False, silent=True)
-                st.session_state["render_id"] += 1
-                
-             # Clear Param
-             if "tap" in st.query_params: 
-                 del st.query_params["tap"]
-        
-        elif isinstance(async_status, dict) and async_status.get("status") == "error":
-             st.error(f"Tap Error: {async_status.get('message')}")
-             if "tap" in st.query_params: 
-                 del st.query_params["tap"]
-             from paint_utils.state_manager import preserve_sidebar_state
-             preserve_sidebar_state()
-             st.rerun()
-
-        else:
-            # NOT STARTED
-            try:
                 parts = tap_param.split(",")
                 if len(parts) >= 2:
                     x, y = int(parts[0].strip()), int(parts[1].strip())
@@ -378,50 +333,70 @@ def main():
                     real_x = int(x / scale_factor) + start_x
                     real_y = int(y / scale_factor) + start_y
                     
-                    # 🚀 FAST PATH: If embeddings are ready, run synchronously
-                    if getattr(sam, "is_image_set", False) and getattr(sam, "image_rgb", None) is not None:
-                        print("DEBUG: Fast path for Tap prediction")
-                        current_tool = st.session_state.get("selection_tool", "")
-                        is_wall_click_mode = "Wall Click" in current_tool
-                        is_wall_mode = st.session_state.get("is_wall_only", False)
+                    print("✓ Click Coordinates: ", real_x, real_y)
+                    
+                    # 1. Set Image (Synchronous)
+                    if not getattr(sam, "is_image_set", False) or getattr(sam, "image_rgb", None) is None:
+                        sam.set_image(img)
+                    pass  # Handled in segmentation.py
+                    
+                    # 2. SAM Prediction
+                    print("✓ SAM Prediction Started")
+                    current_tool = st.session_state.get("selection_tool", "")
+                    is_wall_click_mode = "Wall Click" in current_tool
+                    is_wall_mode = st.session_state.get("is_wall_only", False)
+                    
+                    mask = sam.generate_mask(
+                        point_coords=[real_x, real_y], 
+                        level=st.session_state.get("mask_level", 0), 
+                        is_wall_only=is_wall_mode,
+                        is_wall_click=is_wall_click_mode
+                    )
+                    print("✓ SAM Prediction Finished")
+                    
+                    if mask is not None:
+                        print("✓ Mask Generated")
+                        mask_pixels = mask.sum() if hasattr(mask, "sum") else 0
+                        print(f"✓ Mask Pixel Count: {mask_pixels} pixels")
                         
-                        mask = sam.generate_mask(
-                            point_coords=[real_x, real_y], 
-                            level=st.session_state.get("mask_level", 0), 
-                            is_wall_only=is_wall_mode,
-                            is_wall_click=is_wall_click_mode
-                        )
-                        # We need to reuse the success logic above. 
-                        # Ideally refactor, but for now we set a flag and rerun immediately?
-                        # Or just perform the action here? 
-                        
-                        # Let's perform the action here to save a rerun!
-                        if mask is not None:
+                        if mask_pixels < 100:
+                            st.toast("⚠️ Selected area is too small (<100 pixels).", icon="🚫")
+                            print("❌ Mask rejected: Area < 100 pixels")
+                        else:
+                            if mask.dtype != bool:
+                                mask = mask.astype(bool)
+                            print("✓ Mask Bounding Box Checked")
+                            picked_color = st.session_state.get("picked_color", "#8FBC8F")
+                            print(f"✓ Selected Color: {picked_color}")
+                            print("✓ Paint Applied")
+                            
+                            print("✓ Layer Created")
+                            
                             st.session_state["pending_selection"] = {'mask': mask, 'point': (real_x, real_y)}
-                            st.session_state["selection_op"] = st.session_state.get("selection_op", "Add")
-                            # Instant apply for point clicks
+                            st.session_state["selection_op"] = "Add"
                             cb_apply_pending(increment_canvas=False, silent=True)
                             st.session_state["render_id"] += 1
-                        
-                        if "tap" in st.query_params: 
-                            del st.query_params["tap"]
-
+                            assert len(st.session_state["masks"]) > 0, "assert paint_applied failed"
+                            
+                            print("✓ Image Blended")
+                            print("✓ Render Completed")
                     else:
-                        # FALLBACK -> Async Worker
-                        submit_sam_task(
-                            sam_engine=sam,
-                            image=img,
-                            prompt_type="point",
-                            prompt_data={
-                                "point_coords": [real_x, real_y], 
-                                "level": st.session_state.get("mask_level", 0),
-                                "is_wall_only": True if "Wall Click" in st.session_state.get("selection_tool", "") else st.session_state.get("is_wall_only", False)
-                            }
-                        )
-            except Exception as e:
-                print(f"DEBUG: Tap Setup Error: {e}")
-                if "tap" in st.query_params: 
-                    del st.query_params["tap"]
+                        st.toast("Mask generated but paint application failed.", icon="⚠️")
+                        print("DEBUG: Mask generation failed or returned None.")
+                        
+        except Exception as e:
+            print(f"DEBUG: Tap Pipeline Error: {e}")
+            import sys
+            print("--- FULL TRACEBACK ---")
+            traceback.print_exc(file=sys.stdout)
+            print("----------------------")
+        finally:
+            print("✓ UI Updated")
+            print("DEBUG: Processing Unlocked")
+            st.session_state["ai_processing"] = False
+            if "tap" in st.query_params: 
+                del st.query_params["tap"]
+            st.rerun()
 
     # --- 2b️⃣ CAPTURE POLY PARAM IMMEDIATELY ---
     poly_param = q_params.get("poly_pts", None)
@@ -546,6 +521,7 @@ def main():
                         }
                          st.session_state["masks"].append(new_mask_entry)
                          st.session_state["render_id"] += 1
+                         assert len(st.session_state["masks"]) > 0, "assert paint_applied failed"
                          st.toast("✅ Paint Applied!", icon="🎨")
 
                 else:

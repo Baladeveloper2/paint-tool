@@ -68,7 +68,35 @@ def run_async_sam_task(sam_engine, image, prompt_type, prompt_data, **kwargs):
         return {"status": "error", "message": str(e)}
 
 def submit_sam_task(sam_engine, image, prompt_type, prompt_data):
-    """Submits a SAM task to the executor."""
+    """Submits a SAM task to the executor with 300ms debouncing and exact coordinate rejection."""
+    
+    # Debounce (Requirement 7: ignore clicks < 300ms)
+    current_time = time.time()
+    last_click_time = st.session_state.get("last_click_time", 0)
+    if current_time - last_click_time < 0.3:
+        logging.info("DEBOUNCE: Ignoring click (occurred within 300ms of last click)")
+        return
+        
+    # Coordinate rejection (Requirement 7: ignore identical coordinates)
+    last_coords = st.session_state.get("last_click_coords")
+    current_coords = None
+    if prompt_type == "point":
+        current_coords = str(prompt_data.get('point_coords'))
+    elif prompt_type == "box":
+        current_coords = str(prompt_data.get('box_coords'))
+        
+    if current_coords and current_coords == last_coords:
+        logging.info("DEBOUNCE: Ignoring click (identical coordinates to previous inference)")
+        return
+        
+    st.session_state["last_click_time"] = current_time
+    st.session_state["last_click_coords"] = current_coords
+
+    # Requirement 6, 14: Only allow one inference at a time
+    if st.session_state.get("async_task") and check_async_task() == "running":
+        logging.warning("DEBOUNCE: Inference already running. Dropping new click request.")
+        return
+
     future = executor.submit(run_async_sam_task, sam_engine, image, prompt_type, prompt_data)
     
     st.session_state["async_task"] = {
