@@ -157,9 +157,8 @@ class AIEngine:
                 )[0]
                 semantic_map = semantic_segmentation.cpu().numpy()
                 
-                self.wall_base_mask = (semantic_map == 0) | (semantic_map == 1) | (semantic_map == 25)
-                exclude_classes = {2, 3, 4, 5, 6, 8, 9, 11, 12, 13, 14, 15, 17, 18, 19, 20, 23, 24, 31, 32, 33, 80, 86, 101, 112, 116, 128}
-                ade_exclude_mask = np.isin(semantic_map, list(exclude_classes)).astype(np.uint8)
+                self.wall_base_mask = (semantic_map == 0) | (semantic_map == 1) | (semantic_map == 25) | (semantic_map == 43) | (semantic_map == 105)
+                ade_exclude_mask = (~self.wall_base_mask).astype(np.uint8)
                 self.exclusion_mask = np.maximum(yolo_mask, ade_exclude_mask)
                 
                 # Boundaries & Watershed
@@ -406,17 +405,7 @@ class AIEngine:
                 refined_mask = refined_mask.astype(np.uint8)
                 refined_mask[self.exclusion_mask > 0] = 0
                 
-                cnts, hierarchy = cv2.findContours(refined_mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
-                out_mask = np.copy(refined_mask)
-                if hierarchy is not None:
-                    hierarchy = hierarchy[0]
-                    for i, c in enumerate(cnts):
-                        parent_idx = hierarchy[i][3]
-                        if parent_idx != -1: 
-                            area = cv2.contourArea(c)
-                            if area < (h * w * 0.02):
-                                cv2.drawContours(out_mask, [c], -1, 1, thickness=-1)
-                refined_mask = out_mask
+                # Hole filling removed to preserve windows and doors
                 
                 kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
                 refined_mask = cv2.morphologyEx(refined_mask, cv2.MORPH_CLOSE, kernel)
