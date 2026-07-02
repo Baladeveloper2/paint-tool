@@ -40,6 +40,7 @@ class SegmentationEngine:
 
         self.predictor = SamPredictor(self.sam)
         self.is_image_set = False
+        self.mask_cache = {}
 
     def set_image(self, image_rgb):
         """
@@ -59,6 +60,7 @@ class SegmentationEngine:
         self.predictor.set_image(image_rgb)
         self.is_image_set = True
         self.image_rgb = image_rgb
+        self.mask_cache.clear()
         
         # --- PRE-COMPUTE FEATURES FOR FASTER CLICKS ---
         # 1. Grayscale
@@ -97,6 +99,20 @@ class SegmentationEngine:
         """
         if not self.is_image_set:
             raise RuntimeError("Image not set. Call set_image() first.")
+
+        # --- CACHING LOGIC ---
+        cache_key = None
+        if point_coords is not None:
+            pc = tuple(np.array(point_coords).flatten())
+            pl = tuple(np.array(point_labels).flatten()) if point_labels is not None else ()
+            cache_key = f"P_{pc}_{pl}_{level}_{is_wall_only}_{cleanup}_{is_wall_click}"
+        elif box_coords is not None:
+            bc = tuple(np.array(box_coords).flatten())
+            cache_key = f"B_{bc}_{level}_{is_wall_only}_{cleanup}_{is_wall_click}"
+            
+        if cache_key and cache_key in self.mask_cache:
+            logger.info("Returning cached mask.")
+            return self.mask_cache[cache_key].copy()
 
         # Prepare inputs
         sam_point_coords = None
@@ -154,12 +170,54 @@ class SegmentationEngine:
                 if box_coords is not None:
                     # Box Mode: Always want the largest/whole object (Index 2)
                     best_mask = masks[2] if scores[2] > SegmentationConfig.SAM_MIN_SCORE else masks[1]
-                else:
-                    # Point Click Mode: Analyze ALL 3 masks and pick best one for doors/windows
+                elif is_wall_click:
+                    # --- INTELLIGENT ARCHITECTURAL WALL MODE ---
                     h, w = masks[0].shape
                     image_area = h * w
                     
-                    # Analyze all 3 masks
+                    best_mask = masks[0]
+                    best_wall_score = -9999
+                    
+                    for idx in range(3):
+                        mask_area = np.sum(masks[idx])
+                        if mask_area == 0: continue
+                        
+                        area_ratio = mask_area / image_area
+                        if area_ratio < SegmentationConfig.MIN_WALL_AREA_RATIO:
+                            print(f"Wall rejected idx {idx} due to tiny area: {area_ratio:.4f}")
+                            continue # Reject tiny masks
+                            
+                        # Edge density
+                        avg_edge = np.mean(self.image_edges_map[masks[idx] > 0])
+                        edge_density = avg_edge / 255.0
+                        
+                        if edge_density > SegmentationConfig.MAX_EDGE_DENSITY_WALL:
+                            print(f"Wall rejected idx {idx} due to high edge density: {edge_density:.2f}")
+                            continue
+                            
+                        # Variance for transparency/flatness
+                        mask_variance = np.var(self.image_gray[masks[idx] > 0])
+                        if mask_variance < SegmentationConfig.TRANSPARENCY_VARIANCE_MIN:
+                            print(f"Wall rejected idx {idx} due to low variance: {mask_variance:.2f}")
+                            continue
+                            
+                        # Score calculation
+                        score = (area_ratio * 100) - (edge_density * 50) + (scores[idx] * 10)
+                        print(f"Wall Mask {idx}: area={area_ratio*100:.1f}%, edge_density={edge_density:.2f}, score={score:.2f}")
+                        
+                        if score > best_wall_score:
+                            best_wall_score = score
+                            best_mask = masks[idx]
+                            
+                    if best_wall_score == -9999:
+                        print("All wall masks rejected by heuristics. Falling back to largest.")
+                        best_idx = np.argmax([np.sum(masks[0]), np.sum(masks[1]), np.sum(masks[2])])
+                        best_mask = masks[best_idx]
+                else:
+                    # --- STANDARD POINT CLICK MODE ---
+                    h, w = masks[0].shape
+                    image_area = h * w
+                    
                     best_mask = masks[0]  # Default
                     best_door_score = -1
                     
@@ -172,11 +230,9 @@ class SegmentationEngine:
                         mask_height = np.max(y_coords) - np.min(y_coords) + 1
                         mask_width = np.max(x_coords) - np.min(x_coords) + 1
                         
-                        # Calculate characteristics
                         area_ratio = mask_area / image_area
                         aspect_ratio = mask_height / max(mask_width, 1)
                         
-                        # Updated: Only count as door if area is genuinely small
                         door_score = 0
                         if area_ratio < 0.20:
                             if aspect_ratio > 1.3: door_score += 2
@@ -185,70 +241,32 @@ class SegmentationEngine:
 
                         print(f"Mask {idx}: area={area_ratio*100:.1f}%, aspect={aspect_ratio:.2f}, score={scores[idx]:.2f}, door_score={door_score}")
                         
-                        
-                        # Priority 1: Large Area (ONLY for Wall Click Mode)
-                        # We only auto-grab large masks if the user is explicitly using the Wall tool
-                        if is_wall_click and area_ratio > 0.25:
-                             current_best_area = np.sum(best_mask) / image_area
-                             if area_ratio > current_best_area:
-                                 best_mask = masks[idx]
-                                 best_door_score = 0 
-                                 continue
-                        
-                        # Priority 2: Best Door Match (for both modes, helps avoid bleeding)
                         if door_score > best_door_score and (best_door_score != 0 or door_score > 4):
                             best_door_score = door_score
                             best_mask = masks[idx]
                     
-                    print(f"Selected mask with door_score={best_door_score}")
-                    
-                    # SAFETY MARGIN: If we detected a door/window (score >= 5), apply erosion
-                    # to create a margin that prevents bleeding onto adjacent walls
                     if best_door_score >= 5:
-                        # Calculate erosion strength based on mask size
                         mask_area = np.sum(best_mask)
                         area_ratio = mask_area / image_area
                         
-                        # REDUCED EROSION STRENGTH to prevent gaps (User Feedback)
-                        if area_ratio < 0.05:  # Very small (< 5%)
-                            kernel_size = 3    
-                            iterations = 1     
-                        elif area_ratio < 0.10:  # (Small < 10%)
-                            kernel_size = 3
-                            iterations = 1      # Reduced from 2
-                        elif area_ratio < 0.15:  # Medium small (< 15%)
-                            kernel_size = 3
-                            iterations = 1
-                        else:  # Large objects need less erosion
-                            kernel_size = 3
-                            iterations = 1
+                        if area_ratio < 0.05:
+                            kernel_size, iterations = 3, 1
+                        elif area_ratio < 0.15:
+                            kernel_size, iterations = 3, 1
+                        else:
+                            kernel_size, iterations = 3, 1
                         
-                        # Only apply if ratio is significant enough to warrant it (skip for tiny details)
                         if area_ratio > 0.005:
                             erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
                             best_mask = cv2.erode(best_mask.astype(np.uint8), erode_kernel, iterations=iterations).astype(bool)
-                            print(f"Applied erosion: kernel={kernel_size}x{kernel_size}, iterations={iterations}")
-                        else:
-                            print(f"Skipped erosion for tiny object (ratio={area_ratio:.4f})")
                     
-                    # If no mask looks like a door (score < 3), use default behavior
                     if best_door_score < 3:
-                        # Re-calculate area of the masks to be sure we pick the right one
-                        area0 = np.sum(masks[0])
-                        area1 = np.sum(masks[1])
-                        area2 = np.sum(masks[2])
-                        
-                        if is_wall_click:
-                            # In Wall mode, if no door, always take the biggest mask
-                            best_idx = np.argmax([area0, area1, area2])
+                        area0, area1, area2 = np.sum(masks[0]), np.sum(masks[1]), np.sum(masks[2])
+                        if area0 < SegmentationConfig.MIN_MASK_AREA_PIXELS:
+                            best_idx = np.argmax(scores)
                             best_mask = masks[best_idx]
                         else:
-                            # Standard mode: Stay granular
-                            if area0 < SegmentationConfig.MIN_MASK_AREA_PIXELS:
-                                best_idx = np.argmax(scores)
-                                best_mask = masks[best_idx]
-                            else:
-                                best_mask = masks[0]
+                            best_mask = masks[0]
             else:
                 best_mask = masks[level]
         else:
@@ -401,8 +419,21 @@ class SegmentationEngine:
                                 mask_refined = (mask_uint8 & valid_gate & edge_barrier)
                             else:
                                 # Wall Mode: Expand and Bridge
+                                
+                                # Strict Bleed Prevention Barrier
+                                bleed_barrier = np.ones((h, w), dtype=np.uint8)
+                                img_hsv_np = cv2.cvtColor(self.image_rgb, cv2.COLOR_RGB2HSV)
+                                
+                                # Plants (Green hue, saturation>40)
+                                is_plant = ((img_hsv_np[:,:,0] > 35) & (img_hsv_np[:,:,0] < 85) & (img_hsv_np[:,:,1] > 40)).astype(np.uint8)
+                                bleed_barrier[is_plant == 1] = 0
+                                
+                                # Sky/Very bright regions (High value, very low saturation)
+                                is_sky = ((img_hsv_np[:,:,1] < 20) & (img_hsv_np[:,:,2] > 240)).astype(np.uint8)
+                                bleed_barrier[is_sky == 1] = 0
+                                
                                 # 🌊 CONNECTED FLOW: Start from click and fill only connected area
-                                flow_mask = (valid_gate & edge_barrier).astype(np.uint8)
+                                flow_mask = (valid_gate & edge_barrier & bleed_barrier).astype(np.uint8)
                                 bridge_kernel_size = 21 if is_wall_click else 17
                                 bridge_kernel = np.ones((bridge_kernel_size, bridge_kernel_size), np.uint8)
                                 bridged_flow = cv2.morphologyEx(flow_mask, cv2.MORPH_CLOSE, bridge_kernel)
@@ -411,14 +442,30 @@ class SegmentationEngine:
                                     h_f, w_f = bridged_flow.shape
                                     flood_mask = np.zeros((h_f + 2, w_f + 2), np.uint8)
                                     fill_val = 1
+                                    
+                                    if bridged_flow[ref_y, ref_x] == 0:
+                                        cv2.circle(bridged_flow, (ref_x, ref_y), 3, 1, -1)
+                                        
                                     cv2.floodFill(bridged_flow, flood_mask, (ref_x, ref_y), fill_val)
                                     connected_path = (bridged_flow == fill_val).astype(np.uint8)
-                                    mask_refined = connected_path
+                                    
+                                    # Wall Mode: Region Merging
+                                    # Combine the original SAM mask (which passed architectural checks)
+                                    mask_refined = (mask_uint8 | connected_path)
                                     
                                     # Final smooth fill for textured walls
-                                    sm_kernel_size = 9 if is_wall_click else 7
+                                    sm_kernel_size = 11 if is_wall_click else 7
                                     sm_kernel = np.ones((sm_kernel_size, sm_kernel_size), np.uint8)
                                     mask_refined = cv2.morphologyEx(mask_refined, cv2.MORPH_CLOSE, sm_kernel)
+                                    
+                                    # Mask merging with adjacent regions
+                                    if is_wall_click:
+                                        dilate_kernel = np.ones((SegmentationConfig.WALL_MERGE_MAX_DISTANCE, SegmentationConfig.WALL_MERGE_MAX_DISTANCE), np.uint8)
+                                        adjacent_zone = cv2.dilate(mask_refined, dilate_kernel) - mask_refined
+                                        merge_candidates = (adjacent_zone & (color_diff < SegmentationConfig.WALL_MERGE_COLOR_TOLERANCE) & bleed_barrier).astype(np.uint8)
+                                        if np.any(merge_candidates):
+                                            mask_refined = (mask_refined | merge_candidates)
+                                            mask_refined = cv2.morphologyEx(mask_refined, cv2.MORPH_CLOSE, sm_kernel)
                                 else:
                                     mask_refined = flow_mask
                             
@@ -519,6 +566,9 @@ class SegmentationEngine:
                                     max_label = i
                             best_mask = (labels_im == max_label)
         
+        if cache_key:
+            self.mask_cache[cache_key] = best_mask.copy()
+            
         return best_mask
 
     def _filter_small_components(self, mask, click_x, click_y, target_label, labels_im, stats, centroids):

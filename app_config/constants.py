@@ -29,6 +29,13 @@ class SegmentationConfig:
     DOOR_ASPECT_RATIO_MIN = 1.3  # Doors are taller than wide (height/width > 1.3)
     DOOR_WIDTH_MAX_RATIO = 0.30  # Doors typically < 30% of image width
     
+    # --- Architectural Heuristics ---
+    MAX_EDGE_DENSITY_WALL = 0.25      # Reject masks with > 25% edge density (grills, complex windows)
+    MIN_WALL_AREA_RATIO = 0.005       # Reject masks < 0.5% of image area as walls
+    TRANSPARENCY_VARIANCE_MIN = 10.0  # Glass/transparent regions often have very low variance or high specularity
+    WALL_MERGE_COLOR_TOLERANCE = 45   # Threshold for merging adjacent wall segments
+    WALL_MERGE_MAX_DISTANCE = 50      # Max distance in pixels to consider regions adjacent
+    
     # Tolerance for level 1 (sub-segment) selections
     INTENSITY_DIFF_LEVEL_1 = 45
     
