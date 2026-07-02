@@ -170,16 +170,18 @@ class SegmentationEngine:
         
         if lines is not None:
             for line in lines:
-                x1, y1, x2, y2 = line[0]
-                angle = np.abs(np.arctan2(y2 - y1, x2 - x1) * 180.0 / np.pi)
-                
-                # Filter for strict architectural lines: horizontal (0/180) or vertical (90)
-                is_horizontal = (angle < 15) or (angle > 165)
-                is_vertical = (75 < angle < 105)
-                
-                if is_horizontal or is_vertical:
-                    # Draw rigid thick line barriers to forcefully cut intersecting planes
-                    cv2.line(structural_lines_mask, (x1, y1), (x2, y2), 255, thickness=4)
+                coords = line.flatten()
+                if len(coords) >= 4:
+                    x1, y1, x2, y2 = map(int, coords[:4])
+                    angle = np.abs(np.arctan2(y2 - y1, x2 - x1) * 180.0 / np.pi)
+                    
+                    # Filter for strict architectural lines: horizontal (0/180) or vertical (90)
+                    is_horizontal = (angle < 15) or (angle > 165)
+                    is_vertical = (75 < angle < 105)
+                    
+                    if is_horizontal or is_vertical:
+                        # Draw rigid thick line barriers to forcefully cut intersecting planes
+                        cv2.line(structural_lines_mask, (x1, y1), (x2, y2), 255, thickness=4)
         
         # Dilate edges slightly to make them strong plane dividers
         edge_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))

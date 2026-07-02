@@ -170,12 +170,14 @@ class AIEngine:
                 
                 if lines is not None:
                     for line in lines:
-                        x1, y1, x2, y2 = line[0]
-                        angle = np.abs(np.arctan2(y2 - y1, x2 - x1) * 180.0 / np.pi)
-                        is_horizontal = (angle < 15) or (angle > 165)
-                        is_vertical = (75 < angle < 105)
-                        if is_horizontal or is_vertical:
-                            cv2.line(structural_lines_mask, (x1, y1), (x2, y2), 255, thickness=4)
+                        coords = line.flatten()
+                        if len(coords) >= 4:
+                            x1, y1, x2, y2 = map(int, coords[:4])
+                            angle = np.abs(np.arctan2(y2 - y1, x2 - x1) * 180.0 / np.pi)
+                            is_horizontal = (angle < 15) or (angle > 165)
+                            is_vertical = (75 < angle < 105)
+                            if is_horizontal or is_vertical:
+                                cv2.line(structural_lines_mask, (x1, y1), (x2, y2), 255, thickness=4)
                 
                 edge_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
                 dilated_edges = cv2.dilate(edges, edge_kernel, iterations=1)
