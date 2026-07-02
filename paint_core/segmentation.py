@@ -40,7 +40,6 @@ class SegmentationEngine:
 
         self.predictor = SamPredictor(self.sam)
         self.is_image_set = False
-        self.mask_cache = {}
 
     def set_image(self, image_rgb):
         """
@@ -60,7 +59,6 @@ class SegmentationEngine:
         self.predictor.set_image(image_rgb)
         self.is_image_set = True
         self.image_rgb = image_rgb
-        self.mask_cache.clear()
         
         # --- PRE-COMPUTE FEATURES FOR FASTER CLICKS ---
         # 1. Grayscale
@@ -75,8 +73,139 @@ class SegmentationEngine:
         edges = cv2.Laplacian(self.image_blurred, cv2.CV_16S, ksize=3)
         self.image_edges_map = cv2.convertScaleAbs(edges)
         
+        # 4. Strict Canny Edges (for architectural boundaries)
+        img_blur2 = cv2.GaussianBlur(self.image_gray, (5, 5), 0)
+        self.canny_edges = cv2.Canny(img_blur2, 30, 100)
+        
+        # 5. Shadow Vision (CLAHE)
+        # Compute CLAHE equalized image to reveal details hidden in dark shadows (balconies/interiors)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        self.image_clahe = clahe.apply(self.image_gray)
+        img_clahe_blur = cv2.GaussianBlur(self.image_clahe, (5, 5), 0)
+        self.shadow_edges = cv2.Canny(img_clahe_blur, 50, 150)
+        
         print(f"DEBUG: SAM Engine {id(self)} - is_image_set = True ✅ (Features Pre-computed)")
         logger.info("Embeddings and features computed.")
+        
+        # 6. Build permanent architectural exclusion mask (windows, glass, doors, vegetation, sky, ground)
+        self.exclusion_mask = self._build_exclusion_mask(image_rgb)
+        print(f"DEBUG: Exclusion mask built. Excluded {np.sum(self.exclusion_mask)} pixels.")
+
+    def _build_exclusion_mask(self, image_rgb):
+        """
+        Build a comprehensive permanent exclusion mask for all non-wall surfaces.
+        This mask is computed ONCE per image and subtracted from every wall mask.
+
+        Excluded categories:
+          - Vegetation (trees, grass, plants, leaves) - HSV green/yellow-green hues
+          - Sky - bright low-saturation blue or overexposed white
+          - Glass / windows - high local variance + blue tint OR high specularity
+          - Architectural openings - dense edge rectangles (windows, doors, grills, balconies)
+          - Ground / road - low-position brownish or grey flat regions
+          - Dark specular reflections on glass - very dark uniform low-variance patches
+
+        Returns:
+            Binary uint8 mask (H, W) where 1 = excluded (never paint here)
+        """
+        h, w = image_rgb.shape[:2]
+        exclusion = np.zeros((h, w), dtype=np.uint8)
+        hsv = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2HSV).astype(np.int32)
+        H = hsv[:, :, 0]
+        S = hsv[:, :, 1]
+        V = hsv[:, :, 2]
+
+        # ── 1. VEGETATION (green / yellow-green hues) ──────────────────────
+        veg = ((H > 25) & (H < 90) & (S > 35) & (V > 20)).astype(np.uint8)
+        # Dilate slightly to cover leaf shadows that blend into wall color
+        veg = cv2.dilate(veg, np.ones((7, 7), np.uint8), iterations=2)
+        exclusion = np.maximum(exclusion, veg)
+
+        # ── 2. SKY (light blue or overexposed near-white) ───────────────────
+        sky_blue  = ((H > 95) & (H < 135) & (S > 20) & (V > 150)).astype(np.uint8)
+        sky_white = ((S < 25) & (V > 230)).astype(np.uint8)
+        sky = cv2.dilate(np.maximum(sky_blue, sky_white), np.ones((5, 5), np.uint8), iterations=1)
+        exclusion = np.maximum(exclusion, sky)
+
+        # ── 3. DEEP WATER / POOL / REFLECTIVE FLOOR (uniform dark blue) ────
+        deep_water = ((H > 90) & (H < 130) & (S > 60) & (V < 120)).astype(np.uint8)
+        exclusion = np.maximum(exclusion, deep_water)
+
+        # ── 4. GROUND / ROAD (bottom 15% of image that is brownish/grey) ───
+        ground_zone_y = int(h * 0.85)
+        ground_region = image_rgb[ground_zone_y:, :]
+        ground_hsv = hsv[ground_zone_y:, :, :]
+        # Brown / beige / grey at bottom
+        is_ground_color = (
+            ((ground_hsv[:, :, 0] < 30) | (ground_hsv[:, :, 0] > 150)) &
+            (ground_hsv[:, :, 1] < 60)
+        ).astype(np.uint8)
+        exclusion[ground_zone_y:][is_ground_color == 1] = 1
+
+        # ── 5. ARCHITECTURAL OPENINGS via edge-density rectangles ──────────
+        # Windows, doors, grills and balconies have very dense Laplacian edges
+        _, hi_edges = cv2.threshold(self.image_edges_map, 35, 255, cv2.THRESH_BINARY)
+        # Close nearby edges into solid blobs
+        close_k = np.ones((45, 45), np.uint8)
+        hi_closed = cv2.morphologyEx(hi_edges, cv2.MORPH_CLOSE, close_k)
+        # Also use Canny-based shadow edges
+        combined_hi = cv2.bitwise_or(hi_closed, self.shadow_edges)
+        close_k2 = np.ones((35, 35), np.uint8)
+        combined_closed = cv2.morphologyEx(combined_hi, cv2.MORPH_CLOSE, close_k2)
+
+        contours, _ = cv2.findContours(combined_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        opening_mask = np.zeros((h, w), dtype=np.uint8)
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area < 800:
+                continue
+            rx, ry, rw, rh = cv2.boundingRect(cnt)
+            # Skip regions that span > 90% of image width (whole facade) or are at very top/bottom
+            if rw > w * 0.90 or rh > h * 0.90:
+                continue
+            # Compute edge density inside the bounding box
+            roi_edges = hi_edges[ry:ry+rh, rx:rx+rw]
+            edge_density = np.sum(roi_edges > 0) / max(rw * rh, 1)
+            # Only mark as opening if edge-dense (windows/grills) or medium-dense (doors/frames)
+            if edge_density > 0.08:
+                # Shrink bounding rect slightly to keep the wall frame itself paintable
+                pad = 4
+                cv2.rectangle(
+                    opening_mask,
+                    (max(0, rx + pad), max(0, ry + pad)),
+                    (min(w, rx + rw - pad), min(h, ry + rh - pad)),
+                    1, -1
+                )
+        exclusion = np.maximum(exclusion, opening_mask)
+
+        # ── 6. GLASS / SPECULAR REFLECTIONS ────────────────────────────────
+        # Glass appears as high local variance patches that are bright-ish (reflections)
+        gray_f = self.image_gray.astype(np.float32)
+        local_mean = cv2.GaussianBlur(gray_f, (21, 21), 0)
+        local_sq   = cv2.GaussianBlur(gray_f ** 2, (21, 21), 0)
+        local_var  = np.clip(local_sq - local_mean ** 2, 0, None)
+        # Glass: high variance (varied reflections) AND moderately bright
+        glass_hi_var = ((local_var > 300) & (gray_f > 60)).astype(np.uint8)
+        # Also mark very bright specular spots (over-exposed glass glare)
+        specular = ((V > 240) & (S < 40)).astype(np.uint8)
+        glass_mask = cv2.dilate(
+            np.maximum(glass_hi_var, specular),
+            np.ones((5, 5), np.uint8), iterations=1
+        )
+        # Only add glass exclusion INSIDE architectural opening zones to avoid excluding shiny walls
+        glass_in_openings = (glass_mask & opening_mask).astype(np.uint8)
+        glass_in_openings = cv2.dilate(glass_in_openings, np.ones((9, 9), np.uint8), iterations=1)
+        exclusion = np.maximum(exclusion, glass_in_openings)
+
+        # ── 7. FINAL CLEANUP ────────────────────────────────────────────────
+        # Small exclusion islands (< 100 px) can be spurious noise — remove them
+        num_lab, lab_img, stats_ex, _ = cv2.connectedComponentsWithStats(
+            exclusion, connectivity=8
+        )
+        clean = np.zeros_like(exclusion)
+        for i in range(1, num_lab):
+            if stats_ex[i, cv2.CC_STAT_AREA] >= 100:
+                clean[lab_img == i] = 1
+        return clean
 
     def generate_mask(self, point_coords=None, point_labels=None, box_coords=None, level=None, is_wall_only=False, cleanup=True, is_wall_click=False):
         print(f"DEBUG: Entering generate_mask v4.3.1 (UUID: {id(self)})")
@@ -99,20 +228,6 @@ class SegmentationEngine:
         """
         if not self.is_image_set:
             raise RuntimeError("Image not set. Call set_image() first.")
-
-        # --- CACHING LOGIC ---
-        cache_key = None
-        if point_coords is not None:
-            pc = tuple(np.array(point_coords).flatten())
-            pl = tuple(np.array(point_labels).flatten()) if point_labels is not None else ()
-            cache_key = f"P_{pc}_{pl}_{level}_{is_wall_only}_{cleanup}_{is_wall_click}"
-        elif box_coords is not None:
-            bc = tuple(np.array(box_coords).flatten())
-            cache_key = f"B_{bc}_{level}_{is_wall_only}_{cleanup}_{is_wall_click}"
-            
-        if cache_key and cache_key in self.mask_cache:
-            logger.info("Returning cached mask.")
-            return self.mask_cache[cache_key].copy()
 
         # Prepare inputs
         sam_point_coords = None
@@ -171,54 +286,15 @@ class SegmentationEngine:
                     # Box Mode: Always want the largest/whole object (Index 2)
                     best_mask = masks[2] if scores[2] > SegmentationConfig.SAM_MIN_SCORE else masks[1]
                 elif is_wall_click:
-                    # --- INTELLIGENT ARCHITECTURAL WALL MODE ---
-                    h, w = masks[0].shape
-                    image_area = h * w
-                    
+                    # --- STRICT ARCHITECTURAL WALL MODE ---
                     best_mask = masks[0]
-                    best_wall_score = -9999
-                    
-                    for idx in range(3):
-                        mask_area = np.sum(masks[idx])
-                        if mask_area == 0: continue
-                        
-                        area_ratio = mask_area / image_area
-                        if area_ratio < SegmentationConfig.MIN_WALL_AREA_RATIO:
-                            print(f"Wall rejected idx {idx} due to tiny area: {area_ratio:.4f}")
-                            continue # Reject tiny masks
-                            
-                        # Edge density
-                        avg_edge = np.mean(self.image_edges_map[masks[idx] > 0])
-                        edge_density = avg_edge / 255.0
-                        
-                        if edge_density > SegmentationConfig.MAX_EDGE_DENSITY_WALL:
-                            print(f"Wall rejected idx {idx} due to high edge density: {edge_density:.2f}")
-                            continue
-                            
-                        # Variance for transparency/flatness
-                        mask_variance = np.var(self.image_gray[masks[idx] > 0])
-                        if mask_variance < SegmentationConfig.TRANSPARENCY_VARIANCE_MIN:
-                            print(f"Wall rejected idx {idx} due to low variance: {mask_variance:.2f}")
-                            continue
-                            
-                        # Score calculation
-                        score = (area_ratio * 100) - (edge_density * 50) + (scores[idx] * 10)
-                        print(f"Wall Mask {idx}: area={area_ratio*100:.1f}%, edge_density={edge_density:.2f}, score={score:.2f}")
-                        
-                        if score > best_wall_score:
-                            best_wall_score = score
-                            best_mask = masks[idx]
-                            
-                    if best_wall_score == -9999:
-                        print("All wall masks rejected by heuristics. Falling back to largest.")
-                        best_idx = np.argmax([np.sum(masks[0]), np.sum(masks[1]), np.sum(masks[2])])
-                        best_mask = masks[best_idx]
+                    print(f"DEBUG: Strict Wall Mode - Using smallest safest mask (Index 0).")
                 else:
                     # --- STANDARD POINT CLICK MODE ---
                     h, w = masks[0].shape
                     image_area = h * w
                     
-                    best_mask = masks[0]  # Default
+                    best_mask = masks[0]  # Default fallback
                     best_door_score = -1
                     
                     for idx in range(3):
@@ -226,6 +302,7 @@ class SegmentationEngine:
                         if mask_area == 0: continue
                         
                         mask_coords = np.argwhere(masks[idx] > 0)
+                        if len(mask_coords) == 0: continue
                         y_coords, x_coords = mask_coords[:, 0], mask_coords[:, 1]
                         mask_height = np.max(y_coords) - np.min(y_coords) + 1
                         mask_width = np.max(x_coords) - np.min(x_coords) + 1
@@ -267,6 +344,12 @@ class SegmentationEngine:
                             best_mask = masks[best_idx]
                         else:
                             best_mask = masks[0]
+                            
+                # Ultimate fallback to guarantee best_mask is always defined
+                if 'best_mask' not in locals() or best_mask is None:
+                    print("DEBUG: best_mask undefined, falling back to highest score mask.")
+                    best_idx = np.argmax(scores)
+                    best_mask = masks[best_idx]
             else:
                 best_mask = masks[level]
         else:
@@ -394,9 +477,17 @@ class SegmentationEngine:
                             dist_from_click = np.sqrt((X - ref_x)**2 + (Y - ref_y)**2)
                             decay_factor = np.clip(1.0 - (dist_from_click / SegmentationConfig.DECAY_DISTANCE_MAX), SegmentationConfig.DECAY_FACTOR_MIN, 1.0)
                             
-                            # Wall Click Mode uses even higher tolerance for sunlit exteriors
-                            base_tol = 120 if is_wall_click else (SegmentationConfig.COLOR_DIFF_WALL_MODE if is_wall_only else 95)
+                            # Wall Click Mode uses dynamic tolerance based on seed brightness to avoid bleeding in dark areas
                             s_max, s_min = np.max(seed_color), np.min(seed_color)
+                            
+                            if is_wall_click:
+                                # Adaptive tolerance: Dark areas (like shadows/interiors) get strict tolerance
+                                brightness = s_max / 255.0
+                                # Scale base_tol from 45 (pitch black) up to 130 (bright sun)
+                                base_tol = 45 + (85 * brightness)
+                            else:
+                                base_tol = SegmentationConfig.COLOR_DIFF_WALL_MODE if is_wall_only else 95
+                                
                             if (s_max - s_min) / (s_max + 1) > 0.3: base_tol += 10
 
                             tol = base_tol * decay_factor 
@@ -418,56 +509,32 @@ class SegmentationEngine:
                                 # Standard Precise Mode: Stay within SAM boundaries
                                 mask_refined = (mask_uint8 & valid_gate & edge_barrier)
                             else:
-                                # Wall Mode: Expand and Bridge
+                                # ============================================================
+                                # STRICT ARCHITECTURAL WALL MODE
+                                # Uses the pre-computed exclusion_mask (windows, glass, doors,
+                                # vegetation, sky, ground) built at set_image() time.
+                                # ============================================================
                                 
-                                # Strict Bleed Prevention Barrier
-                                bleed_barrier = np.ones((h, w), dtype=np.uint8)
-                                img_hsv_np = cv2.cvtColor(self.image_rgb, cv2.COLOR_RGB2HSV)
+                                # Strict architectural edge barrier (Canny + CLAHE edges)
+                                combined_edges = cv2.bitwise_or(self.canny_edges, self.shadow_edges)
+                                strict_edge_barrier = (combined_edges == 0).astype(np.uint8)
                                 
-                                # Plants (Green hue, saturation>40)
-                                is_plant = ((img_hsv_np[:,:,0] > 35) & (img_hsv_np[:,:,0] < 85) & (img_hsv_np[:,:,1] > 40)).astype(np.uint8)
-                                bleed_barrier[is_plant == 1] = 0
+                                # Start with SAM's finest mask constrained to architectural edges
+                                mask_refined = (mask_uint8 & strict_edge_barrier).astype(np.uint8)
                                 
-                                # Sky/Very bright regions (High value, very low saturation)
-                                is_sky = ((img_hsv_np[:,:,1] < 20) & (img_hsv_np[:,:,2] > 240)).astype(np.uint8)
-                                bleed_barrier[is_sky == 1] = 0
+                                # Absolute exclusion: subtract all non-wall regions
+                                mask_refined[self.exclusion_mask == 1] = 0
                                 
-                                # 🌊 CONNECTED FLOW: Start from click and fill only connected area
-                                flow_mask = (valid_gate & edge_barrier & bleed_barrier).astype(np.uint8)
-                                bridge_kernel_size = 21 if is_wall_click else 17
-                                bridge_kernel = np.ones((bridge_kernel_size, bridge_kernel_size), np.uint8)
-                                bridged_flow = cv2.morphologyEx(flow_mask, cv2.MORPH_CLOSE, bridge_kernel)
+                                # Tiny closing only to fill sub-pixel SAM fragmentation (NOT to bridge gaps)
+                                sm_kernel = np.ones((3, 3), np.uint8)
+                                mask_refined = cv2.morphologyEx(mask_refined, cv2.MORPH_CLOSE, sm_kernel)
                                 
-                                if ref_x is not None and ref_y is not None:
-                                    h_f, w_f = bridged_flow.shape
-                                    flood_mask = np.zeros((h_f + 2, w_f + 2), np.uint8)
-                                    fill_val = 1
-                                    
-                                    if bridged_flow[ref_y, ref_x] == 0:
-                                        cv2.circle(bridged_flow, (ref_x, ref_y), 3, 1, -1)
-                                        
-                                    cv2.floodFill(bridged_flow, flood_mask, (ref_x, ref_y), fill_val)
-                                    connected_path = (bridged_flow == fill_val).astype(np.uint8)
-                                    
-                                    # Wall Mode: Region Merging
-                                    # Combine the original SAM mask (which passed architectural checks)
-                                    mask_refined = (mask_uint8 | connected_path)
-                                    
-                                    # Final smooth fill for textured walls
-                                    sm_kernel_size = 11 if is_wall_click else 7
-                                    sm_kernel = np.ones((sm_kernel_size, sm_kernel_size), np.uint8)
-                                    mask_refined = cv2.morphologyEx(mask_refined, cv2.MORPH_CLOSE, sm_kernel)
-                                    
-                                    # Mask merging with adjacent regions
-                                    if is_wall_click:
-                                        dilate_kernel = np.ones((SegmentationConfig.WALL_MERGE_MAX_DISTANCE, SegmentationConfig.WALL_MERGE_MAX_DISTANCE), np.uint8)
-                                        adjacent_zone = cv2.dilate(mask_refined, dilate_kernel) - mask_refined
-                                        merge_candidates = (adjacent_zone & (color_diff < SegmentationConfig.WALL_MERGE_COLOR_TOLERANCE) & bleed_barrier).astype(np.uint8)
-                                        if np.any(merge_candidates):
-                                            mask_refined = (mask_refined | merge_candidates)
-                                            mask_refined = cv2.morphologyEx(mask_refined, cv2.MORPH_CLOSE, sm_kernel)
-                                else:
-                                    mask_refined = flow_mask
+                                # Re-enforce edges and exclusions after closing
+                                mask_refined = (mask_refined & strict_edge_barrier).astype(np.uint8)
+                                mask_refined[self.exclusion_mask == 1] = 0
+                                
+                                print(f"DEBUG: Wall mask after exclusion: {np.sum(mask_refined)} pixels remain")
+
                             
                     elif level == 1:
                         # Level 1 Sub-segment: Calculate color_diff here too
@@ -566,9 +633,18 @@ class SegmentationEngine:
                                     max_label = i
                             best_mask = (labels_im == max_label)
         
-        if cache_key:
-            self.mask_cache[cache_key] = best_mask.copy()
-            
+        # === FINAL ABSOLUTE EXCLUSION PASS (wall mode) ===
+        # After all connectivity filtering, apply exclusion mask one last time.
+        # This guarantees that no window, glass, vegetation, or sky pixel survives.
+        if is_wall_click or is_wall_only:
+            if hasattr(self, 'exclusion_mask') and self.exclusion_mask is not None:
+                if isinstance(best_mask, np.ndarray):
+                    bm = best_mask.astype(np.uint8)
+                    bm[self.exclusion_mask == 1] = 0
+                    best_mask = bm.astype(bool)
+                    area = np.sum(best_mask)
+                    print(f"DEBUG: Final wall mask area after exclusion = {area} px")
+
         return best_mask
 
     def _filter_small_components(self, mask, click_x, click_y, target_label, labels_im, stats, centroids):

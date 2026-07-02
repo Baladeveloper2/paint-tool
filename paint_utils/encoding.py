@@ -5,7 +5,6 @@ from PIL import Image
 import numpy as np
 from app_config.constants import PerformanceConfig
 
-@st.cache_data(show_spinner=False, max_entries=PerformanceConfig.IMAGE_ENCODING_CACHE_SIZE)
 def _cached_image_to_url(_image, width, use_column_width, clamp, format, image_id):
     """Internal cached encoder that avoids hashing the heavy image data."""
     try:

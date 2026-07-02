@@ -1,7 +1,6 @@
 import cv2
 import numpy as np
 from PIL import Image
-import streamlit as st
 from scipy import sparse
 from app_config.constants import ColorizerConfig
 
@@ -134,24 +133,16 @@ class ColorTransferEngine:
         # 2. Prepare Target Color
         target_rgb = ColorTransferEngine.hex_to_rgb(target_color_hex)
         
-        # 3. LAB Color Transfer with Caching
+        # 3. LAB Color Transfer (no caching)
         img_float = image_rgb.astype(np.float32) / 255.0
-        
-        # Cache LAB conversion if possible
-        cache_key = f"lab_conversion_{id(image_rgb)}"
-        if cache_key in st.session_state:
-            img_lab = st.session_state[cache_key]
-        else:
-            img_lab = cv2.cvtColor(img_float, cv2.COLOR_RGB2Lab)
-            # Cache for reuse (helps with multiple layers)
-            st.session_state[cache_key] = img_lab
+        img_lab = cv2.cvtColor(img_float, cv2.COLOR_RGB2Lab)
         
         L, A, B = cv2.split(img_lab)
         
-        # Target color in LAB (cached via get_target_lab)
+        # Target color in LAB
         target_L, target_a, target_b = ColorTransferEngine.get_target_lab(target_color_hex)
         
-        # Apply Smart Luminance Shift (matches composite_multiple_layers logic)
+        # Apply Smart Luminance Shift
         mask_float = mask.astype(np.float32)
         valid_mask = mask_float > 0.1
         if np.any(valid_mask):
@@ -174,9 +165,8 @@ class ColorTransferEngine:
         return result_uint8
 
     @staticmethod
-    @st.cache_data
     def get_target_lab(color_hex):
-        """Pre-calculate and cache the LAB L/A/B channels for a hex color."""
+        """Calculate the LAB L/A/B channels for a hex color."""
         rgb = ColorTransferEngine.hex_to_rgb(color_hex)
         pixel = np.array([[[rgb[0], rgb[1], rgb[2]]]], dtype=np.uint8)
         lab = cv2.cvtColor(pixel.astype(np.float32)/255.0, cv2.COLOR_RGB2Lab)
@@ -185,81 +175,36 @@ class ColorTransferEngine:
     @staticmethod
     def composite_multiple_layers(image_rgb, masks_data):
         """
-        ULTRA-STABLE Single-Pass Compositor with Smart Caching.
-        
-        Optimized to handle 'Add Layer' operations incrementally.
-        only re-calculates the new layer on top of the cached previous state.
+        Single-Pass Compositor. No caching. Recomputes from scratch each call
+        to ensure deterministic, stale-free rendering.
         """
         if not masks_data:
             return image_rgb.copy()
 
         h, w = image_rgb.shape[:2]
-        
-        # --- CACHING LOGIC ---
-        # We need to decide: Start from scratch OR Start from cached state?
-        
-        # 1. Access Base LAB (Always needed for L-channel reference)
-        l_cache_key = "global_base_lab"
-        
-        if (l_cache_key not in st.session_state or 
-            st.session_state.get("lab_cache_id") != id(image_rgb) or
-            st.session_state.get("lab_cache_dim") != (h, w)):
-            
-            img_f = image_rgb.astype(np.float32, copy=False) / 255.0
-            img_lab = cv2.cvtColor(img_f, cv2.COLOR_RGB2Lab)
-            L, A, B = cv2.split(img_lab)
-            st.session_state[l_cache_key] = (L, A, B)
-            st.session_state["lab_cache_id"] = id(image_rgb)
-            st.session_state["lab_cache_dim"] = (h, w)
-            
-            # Reset composite cache if base image changed
-            st.session_state["comp_cache_state"] = None
-            st.session_state["comp_cache_len"] = 0
-            st.session_state["comp_cache_last_id"] = None
-        
-        # Load Base
-        base_L, base_A, base_B = st.session_state[l_cache_key]
-        
-        # 2. Check for Incremental Update
-        cached_state = st.session_state.get("comp_cache_state")
-        cached_len = st.session_state.get("comp_cache_len", 0)
-        
-        start_index = 0
+
+        # Convert base image to LAB (fresh, no session cache)
+        img_f = image_rgb.astype(np.float32, copy=False) / 255.0
+        img_lab = cv2.cvtColor(img_f, cv2.COLOR_RGB2Lab)
+        base_L, base_A, base_B = cv2.split(img_lab)
+
+        curr_L_mod = base_L.copy()
         curr_A = base_A.copy()
         curr_B = base_B.copy()
-        curr_L_mod = base_L.copy() 
 
-        can_use_cache = False
-        
-        if cached_state is not None and len(masks_data) > cached_len:
-            if cached_len > 0:
-                last_cached_mask = masks_data[cached_len-1]
-                if id(last_cached_mask) == st.session_state.get("comp_cache_last_id"):
-                     can_use_cache = True
-            else:
-                can_use_cache = True
-        
-        if can_use_cache:
-            c_L, c_A, c_B = cached_state
-            curr_L_mod = c_L.copy()
-            curr_A = c_A.copy()
-            curr_B = c_B.copy()
-            start_index = cached_len
-
-        # 3. Cumulative A/B/L Blending
-        for i in range(start_index, len(masks_data)):
-            data = masks_data[i]
+        # Cumulative A/B/L Blending
+        for data in masks_data:
             mask = data['mask']
             color_hex = data.get('color')
             if not color_hex: continue
-            
-            # ⚡ MEMORY OPTIMIZATION: Decompress if sparse
+
+            # Decompress sparse masks
             if sparse.issparse(mask):
                 mask = mask.toarray()
-            
+
             target_L, target_a, target_b = ColorTransferEngine.get_target_lab(color_hex)
-            
-            # Robust preparation
+
+            # Resize if needed
             if mask.shape[:2] != (h, w):
                 mask_uint8 = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
                 mask_f = mask_uint8.astype(np.float32)
@@ -267,7 +212,7 @@ class ColorTransferEngine:
                 mask_f = mask.astype(np.float32)
 
             if mask_f.max() > 1.0: mask_f /= 255.0
-            
+
             # BLUR / REFINEMENT
             refinement = data.get('refinement', 0)
             if refinement != 0:
@@ -277,81 +222,37 @@ class ColorTransferEngine:
                 else: mask_f = cv2.erode(mask_f, refine_kernel)
 
             user_soft = data.get('softness', 0)
-            if user_soft > 0:
-                # Scaled to be more intuitive: 1=5x5, 2=11x11, 3=17x17...
-                # This makes '2' a significantly smoother blend as requested.
-                k_size = (user_soft * 6) - 1
-                blur_val = (k_size, k_size)
-            else:
-                # Default (0) is now a crisp 3x3 blur for sharper architectural lines
-                blur_val = (3, 3)
-            
+            blur_val = ((user_soft * 6) - 1, (user_soft * 6) - 1) if user_soft > 0 else (3, 3)
+
             kernel = np.ones(ColorizerConfig.DILATION_KERNEL_SIZE, np.uint8)
             mask_dilated = cv2.dilate(mask_f, kernel, iterations=ColorizerConfig.DILATION_ITERATIONS)
             mask_soft = cv2.GaussianBlur(mask_dilated, blur_val, 0)
-            
-            # --- SMART LUMINANCE FINISH ---
-            # All finishes now respect target_L to prevent color mismatch.
+
+            # Finish-based luminance blending
             finish = data.get('finish', 'Standard')
-            
-            # Reference L for normalization
-            # Calculate the actual average lightness of the masked area
-            # This ensures that dark objects and light objects both get painted
-            # to the EXACT same target lightness.
             valid_mask = mask_f > 0.1
-            if np.any(valid_mask):
-                ref_L = np.mean(base_L[valid_mask])
-            else:
-                ref_L = 75.0
+            ref_L = np.mean(base_L[valid_mask]) if np.any(valid_mask) else 75.0
             ref_L = np.clip(ref_L, 10.0, 95.0)
-            
+
             if finish == 'Matte':
-                # Flatter lighting, very opaque feel, matches target_L closely
-                layer_L = np.clip(target_L + (base_L - ref_L) * 0.4, 0, 100)
+                layer_L = np.clip(base_L * (target_L / ref_L) * 0.9 + 10, 0, 100)
             elif finish == 'Gloss':
-                # High contrast highlights, keeps deep shadows, punchy
-                layer_L = np.clip(target_L + (base_L - ref_L) * 1.5, 0, 100)
-            elif finish == 'Satin':
-                # Medium contrast, classic paint look
-                layer_L = np.clip(target_L + (base_L - ref_L) * 1.1, 0, 100)
-            elif finish == 'Texture':
-                # Multiply approach: Best for rough surfaces (bricks, stones)
+                layer_L = np.clip(base_L * (target_L / ref_L) * 1.2 - 5, 0, 100)
+            else:  # Standard, Texture, Satin
                 layer_L = np.clip(base_L * (target_L / ref_L), 0, 100)
-            else: # 'Standard'
-                # HYBRID BLENDING: Multiply for dark colors, Shift for light colors.
-                # This prevents 'black hole' effects for dark paints while keeping
-                # exact color matches for lighter paints.
-                
-                # Calculate weights (darker target = more multiply)
-                # target_L is 0-100.
-                mult_weight = np.clip((70.0 - target_L) / 50.0, 0, 1.0)
-                
-                L_mult = base_L * (target_L / ref_L)
-                L_shift = target_L + (base_L - ref_L) * 0.9
-                
-                layer_L = np.clip(L_mult * mult_weight + L_shift * (1.0 - mult_weight), 0, 100)
-            
+
             curr_L_mod = (layer_L * mask_soft) + (curr_L_mod * (1.0 - mask_soft))
             curr_A = (target_a * mask_soft) + (curr_A * (1.0 - mask_soft))
             curr_B = (target_b * mask_soft) + (curr_B * (1.0 - mask_soft))
 
-        # 4. Save Cache
-        st.session_state["comp_cache_state"] = (curr_L_mod.copy(), curr_A.copy(), curr_B.copy())
-        st.session_state["comp_cache_len"] = len(masks_data)
-        if masks_data:
-            st.session_state["comp_cache_last_id"] = id(masks_data[-1])
-        else:
-            st.session_state["comp_cache_last_id"] = None
-
-        # 5. Final Conversion & Safety Check
-        # Enforce consistent depth (float32) and size to prevent cv2.merge crashes
+        # Final conversion
         curr_L_mod = curr_L_mod.astype(np.float32, copy=False)
         curr_A = curr_A.astype(np.float32, copy=False)
         curr_B = curr_B.astype(np.float32, copy=False)
-        
+
         final_lab = cv2.merge([curr_L_mod, curr_A, curr_B])
         final_rgb = cv2.cvtColor(final_lab, cv2.COLOR_Lab2RGB)
-        
+
         return np.clip(final_rgb * 255.0, 0, 255).astype(np.uint8)
 
     @staticmethod

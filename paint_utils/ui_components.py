@@ -21,7 +21,6 @@ from .image_processing import (
     get_display_base_image, to_grayscale_rgb
 )
 from .sam_loader import get_sam_engine, CHECKPOINT_PATH, MODEL_TYPE
-from .performance import cleanup_session_caches
 
 # --- UI CONSTANTS ---
 TOOL_MAPPING = {
@@ -1501,7 +1500,10 @@ def render_sidebar(sam, device_str):
                             del st.session_state[k]
                     st.session_state["render_cache"] = None
                     st.session_state["composited_cache"] = None
-                    st.cache_data.clear()
+                    # Remove any session_state key that has 'cache' in its name
+                    keys_to_delete = [k for k in list(st.session_state.keys()) if 'cache' in k.lower()]
+                    for k in keys_to_delete:
+                        del st.session_state[k]
                     st.session_state["uploader_id"] += 1 
                     preserve_sidebar_state()
                     safe_rerun()
