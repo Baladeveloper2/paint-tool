@@ -511,16 +511,16 @@ def setup_styles():
         <script>
         (function() {
             // 🔒 LOCK VIEWPORT (Prevent Page Zoom)
-            const meta = window.parent.document.createElement('meta');
+            const meta = document.createElement('meta');
             meta.name = 'viewport';
             meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover';
             
             // Check if meta exists, replace if so, else append
-            const existing = window.parent.document.querySelector('meta[name="viewport"]');
+            const existing = document.querySelector('meta[name="viewport"]');
             if (existing) {
                 existing.content = meta.content;
             } else {
-                window.parent.document.getElementsByTagName('head')[0].appendChild(meta);
+                document.getElementsByTagName('head')[0].appendChild(meta);
             }
 
             const _backupWarn = console.warn;
@@ -538,7 +538,7 @@ def setup_styles():
             // 📱 SIDEBAR BUTTON PERMANENCE (No-Hover Fix)
             const ensureUI = () => {
                 try {
-                    const doc = window.parent.document;
+                    const doc = document;
                     // Neutralize the background overlay that closes the sidebar on random taps
                     const overlayers = doc.querySelectorAll('[data-testid="stSidebar"] + div');
                     overlayers.forEach(ov => {
@@ -551,8 +551,8 @@ def setup_styles():
             };
             
             setInterval(ensureUI, 500); 
-            window.parent.addEventListener('mouseup', ensureUI);
-            window.parent.addEventListener('touchend', ensureUI);
+            window.addEventListener('mouseup', ensureUI);
+            window.addEventListener('touchend', ensureUI);
         })();
         </script>
     """, unsafe_allow_html=True)
@@ -603,7 +603,7 @@ def render_zoom_controls(key_suffix="", context_class=""):
     <script>
     (function() {
         const _findCanvas = () => {
-            const doc = window.parent ? window.parent.document : document;
+            const doc = window.parent ? document : document;
             for (const f of doc.querySelectorAll('iframe')) {
                 try {
                     const w = f.contentWindow;
@@ -687,7 +687,7 @@ def render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_
     # 🧼 TOOL SWITCH CLEANUP (Silent)
     if st.session_state.get("tool_switched_reset", False):
         st.session_state["tool_switched_reset"] = False
-        st.html("<script>if(window.parent.STREAMLIT_POLY_POINTS) window.parent.STREAMLIT_POLY_POINTS = [];</script>", unsafe_allow_javascript=True)
+        st.html("<script>if(window.STREAMLIT_POLY_POINTS) window.STREAMLIT_POLY_POINTS = [];</script>", unsafe_allow_javascript=True)
 
     # Signal ID Handling: Normalize signals to extract timestamp if present
     def extract_signal(raw_str):
@@ -948,7 +948,7 @@ def render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_
         p_box = st.session_state.get("pending_box_coords", None)
         p_box_json = str(p_box) if p_box else "null"
         
-        js_config = f"<script>const cfg={{ CANVAS_WIDTH: {display_width}, CANVAS_HEIGHT: {display_height}, CUR_PAN_X: {st.session_state['pan_x']}, CUR_PAN_Y: {st.session_state['pan_y']}, ZOOM_LEVEL: {st.session_state.get('zoom_level', 1.0)}, VIEW_W: {view_w}, IMAGE_W: {w}, VIEW_H: {view_h}, IMAGE_H: {h}, DRAWING_MODE: '{drawing_mode}', PENDING_BOX: {p_box_json} }}; window.CANVAS_CONFIG=cfg; if(window.parent) window.parent.CANVAS_CONFIG=cfg;</script><script>{js_template}</script>"
+        js_config = f"<script>const cfg={{ CANVAS_WIDTH: {display_width}, CANVAS_HEIGHT: {display_height}, CUR_PAN_X: {st.session_state['pan_x']}, CUR_PAN_Y: {st.session_state['pan_y']}, ZOOM_LEVEL: {st.session_state.get('zoom_level', 1.0)}, VIEW_W: {view_w}, IMAGE_W: {w}, VIEW_H: {view_h}, IMAGE_H: {h}, DRAWING_MODE: '{drawing_mode}', PENDING_BOX: {p_box_json} }}; window.CANVAS_CONFIG=cfg; </script><script>{js_template}</script>"
         st.html(js_config, unsafe_allow_javascript=True)
 
     # 🔄 SYNC & PROCESS (Silent)
@@ -1200,7 +1200,7 @@ def render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_
                                 st.session_state["render_id"] += 1
                                 for pk in ["poly_pts", "force_finish", "tap"]:
                                     if pk in st.query_params: st.query_params.pop(pk, None)
-                                st.html("<script>window.parent.STREAMLIT_POLY_POINTS = [];</script>", unsafe_allow_javascript=True)
+                                st.html("<script>window.STREAMLIT_POLY_POINTS = [];</script>", unsafe_allow_javascript=True)
                                 safe_rerun()
                             else:
                                 if force_finish: print(f"DEBUG: Skipping Poly Apply - Empty Mask")
@@ -1694,7 +1694,7 @@ def render_sidebar(sam, device_str):
                 #         st.session_state["force_finish_poly"] = False
                 #         st.query_params.pop("poly_pts", None)
                 #         import streamlit.components.v1 as components
-                #         components.html("<script>window.parent.STREAMLIT_POLY_POINTS = [];</script>", height=0)
+                #         components.html("<script>window.STREAMLIT_POLY_POINTS = [];</script>", height=0)
                 if "Polygonal Lasso" in current_tool:
                     pass
                 elif "Lasso (Freehand)" in current_tool:

@@ -59,10 +59,10 @@
     // ─────────────────────────────────────────────────────────────────────────
     // 🛡️  SUPER-STRICT GESTURE INTERCEPTOR (Parent Level)
     // ─────────────────────────────────────────────────────────────────────────
-    if (!window.parent.__ANTIGRAVITY_TOUCH_HANDLERS_ATTACHED) {
+    if (!window.__ANTIGRAVITY_TOUCH_HANDLERS_ATTACHED) {
         try {
             // Snapshot gesture state on first touch so we have stable references
-            window.parent.document.addEventListener('touchstart', e => {
+            window.document.addEventListener('touchstart', e => {
                 if (e.touches.length === 2) {
                     window.isCanvasGesturing = true;
                     const t1 = e.touches[0], t2 = e.touches[1];
@@ -87,11 +87,11 @@
         } catch (e) { }
 
         // Global pointer-id tracker (used to guard single-finger editors)
-        window.parent.document.addEventListener('pointerdown', e => window.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY }), true);
-        window.parent.document.addEventListener('pointerup', e => window.activePointers.delete(e.pointerId), true);
-        window.parent.document.addEventListener('pointercancel', e => window.activePointers.delete(e.pointerId), true);
+        window.document.addEventListener('pointerdown', e => window.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY }), true);
+        window.document.addEventListener('pointerup', e => window.activePointers.delete(e.pointerId), true);
+        window.document.addEventListener('pointercancel', e => window.activePointers.delete(e.pointerId), true);
 
-        window.parent.__ANTIGRAVITY_TOUCH_HANDLERS_ATTACHED = true;
+        window.__ANTIGRAVITY_TOUCH_HANDLERS_ATTACHED = true;
     }
 
     // Internal tracker for overlay elements (fallback)
@@ -119,7 +119,7 @@
     // ─────────────────────────────────────────────────────────────────────────
     const _getWrapper = () => {
         const iframe = (() => {
-            const all = parent.document.querySelectorAll('iframe[title="streamlit_drawable_canvas.st_canvas"], iframe[src*="streamlit_drawable_canvas"]');
+            const all = document.querySelectorAll('iframe[title="streamlit_drawable_canvas.st_canvas"], iframe[src*="streamlit_drawable_canvas"]');
             for (let i = all.length - 1; i >= 0; i--) {
                 const f = all[i];
                 if (!f.closest('[data-stale="true"]')) return f;
@@ -160,14 +160,14 @@
 
         // ── 2. Compute wrapper-relative midpoint at gesture start ──────────
         //  We need baseScale.  Derive it the same way applyResponsiveScale does.
-        const winW = (parent.window.visualViewport ? parent.window.visualViewport.width : parent.window.innerWidth) || parent.document.documentElement.clientWidth;
+        const winW = (window.visualViewport ? window.visualViewport.width : window.innerWidth) || document.documentElement.clientWidth;
         const CWIDTH = (window.CANVAS_CONFIG || {}).CANVAS_WIDTH || CANVAS_WIDTH;
         const CHEIGHT = (window.CANVAS_CONFIG || {}).CANVAS_HEIGHT || CANVAS_HEIGHT;
         const baseScale = winW < 1024
             ? (winW - 4) / CWIDTH
             : Math.min(
                 Math.min((winW - 60), 1200) / CWIDTH,
-                ((parent.window.visualViewport ? parent.window.visualViewport.height : parent.window.innerHeight) - 120) / CHEIGHT
+                ((window.visualViewport ? window.visualViewport.height : window.innerHeight) - 120) / CHEIGHT
             );
 
         const wrapper = _getWrapper();
@@ -258,9 +258,9 @@
 
     // Attach to parent document to intercept events before iframes see them
     try {
-        window.parent.document.addEventListener('touchmove', handlePinch, { capture: true, passive: false });
-        window.parent.document.addEventListener('touchend', handlePinchEnd, { capture: true, passive: true });
-        window.parent.document.addEventListener('touchcancel', handlePinchEnd, { capture: true, passive: true });
+        window.document.addEventListener('touchmove', handlePinch, { capture: true, passive: false });
+        window.document.addEventListener('touchend', handlePinchEnd, { capture: true, passive: true });
+        window.document.addEventListener('touchcancel', handlePinchEnd, { capture: true, passive: true });
 
         // Local window fallback
         window.addEventListener('touchmove', handlePinch, { capture: true, passive: false });
@@ -269,7 +269,7 @@
     } catch (e) { }
 
     // Config Check
-    let config = window.CANVAS_CONFIG || (window.parent ? window.parent.CANVAS_CONFIG : null);
+    let config = window.CANVAS_CONFIG || (window ? window.CANVAS_CONFIG : null);
     if (!config && window.CANVAS_CONFIG_JSON) {
         try { config = JSON.parse(window.CANVAS_CONFIG_JSON); } catch (e) { }
     }
@@ -278,7 +278,7 @@
     const { CANVAS_WIDTH, CANVAS_HEIGHT } = config;
 
     const getActiveIframe = () => {
-        const all = parent.document.querySelectorAll('iframe[title="streamlit_drawable_canvas.st_canvas"], iframe[src*="streamlit_drawable_canvas"]');
+        const all = document.querySelectorAll('iframe[title="streamlit_drawable_canvas.st_canvas"], iframe[src*="streamlit_drawable_canvas"]');
         for (let i = all.length - 1; i >= 0; i--) {
             const f = all[i];
             if (!f.closest('[data-stale="true"]')) return f;
@@ -290,7 +290,7 @@
     const throttledReplaceState = (url) => {
         const now = Date.now();
         if (now - lastHistoryCall < 50) return false;
-        parent.history.replaceState({}, '', url.toString());
+        window.history.replaceState({}, '', url.toString());
         // REMOVED popstate dispatch to avoid double-rerun race conditions with manual trigger
         lastHistoryCall = now;
         return true;
@@ -302,7 +302,7 @@
         window.lastRerunTrigger = now;
         setTimeout(() => {
             // Robust Text-Based Search for the Sync Button
-            const buttons = Array.from(parent.document.querySelectorAll('button'));
+            const buttons = Array.from(document.querySelectorAll('button'));
             const syncBtn = buttons.find(b => b.textContent && b.textContent.includes("GLOBAL SYNC"));
 
             if (syncBtn) {
@@ -310,7 +310,7 @@
                 syncBtn.click();
             } else {
                 console.error("JS: Sync Button 'GLOBAL SYNC' NOT FOUND in parent document.");
-                const globalMarker = parent.document.querySelector('[data-sync-id="global_sync"]');
+                const globalMarker = document.querySelector('[data-sync-id="global_sync"]');
                 if (globalMarker) {
                     const block = globalMarker.closest('[data-testid="stVerticalBlock"]');
                     if (block) {
@@ -344,7 +344,7 @@
 
         createBaseSelect() {
             // Overlay
-            this.overlay = parent.document.createElement('div');
+            this.overlay = document.createElement('div');
             this.overlay.id = this.id + '-overlay';
             Object.assign(this.overlay.style, {
                 position: 'absolute',
@@ -357,7 +357,7 @@
             });
 
             // Toolbar
-            this.toolbar = parent.document.createElement('div');
+            this.toolbar = document.createElement('div');
             this.toolbar.id = this.id + '-toolbar';
             Object.assign(this.toolbar.style, {
                 display: 'none',
@@ -389,7 +389,7 @@
 
             if (wrapper.nextElementSibling !== this.toolbar) {
                 // Remove stale toolbars from other editors if they are sticking around
-                const oldBars = parent.document.querySelectorAll('[id$="-toolbar"]');
+                const oldBars = document.querySelectorAll('[id$="-toolbar"]');
                 oldBars.forEach(b => { if (b !== this.toolbar) b.remove(); });
                 wrapper.after(this.toolbar);
             }
@@ -418,8 +418,8 @@
             this.startBox = null;
             this.activeHandle = null;
 
-            this.boxContainer = parent.document.createElement('div');
-            this.handleContainer = parent.document.createElement('div');
+            this.boxContainer = document.createElement('div');
+            this.handleContainer = document.createElement('div');
             this.overlay.appendChild(this.boxContainer);
             this.overlay.appendChild(this.handleContainer);
 
@@ -431,7 +431,7 @@
             // Handles
             const positions = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
             positions.forEach(pos => {
-                const h = parent.document.createElement('div');
+                const h = document.createElement('div');
                 h.dataset.handle = pos;
                 Object.assign(h.style, {
                     position: 'absolute', width: '24px', height: '24px',
@@ -444,12 +444,12 @@
             });
 
             // Toolbar Buttons
-            const btnDelete = parent.document.createElement('button');
+            const btnDelete = document.createElement('button');
             btnDelete.innerHTML = "🗑️ Delete";
             btnDelete.style.cssText = btnBase + "color: #333;";
             btnDelete.onclick = (e) => { e.preventDefault(); this.deleteSelected(); };
 
-            const btnApply = parent.document.createElement('button');
+            const btnApply = document.createElement('button');
             btnApply.innerHTML = "✅ Apply";
             btnApply.style.cssText = btnBase + "border-color: #10B981; color: #10B981; background: #F0FDF4;";
             btnApply.onclick = (e) => { e.preventDefault(); this.commit(); };
@@ -489,7 +489,7 @@
         updateDOM() {
             this.boxContainer.innerHTML = '';
             this.boxes.forEach((b, idx) => {
-                const el = parent.document.createElement('div');
+                const el = document.createElement('div');
                 const isSelected = (idx === this.selectedIndex);
                 Object.assign(el.style, {
                     position: 'absolute', left: b.x + 'px', top: b.y + 'px',
@@ -681,7 +681,7 @@
                 return `${cx1},${cy1},${cx2},${cy2}`;
             });
             const val = parts.join('|') + ',' + Date.now();
-            const url = new URL(parent.location.href);
+            const url = new URL(window.location.href);
             url.searchParams.set('box', val);
             url.searchParams.delete('tap'); url.searchParams.delete('poly_pts');
             throttledReplaceState(url);
@@ -698,15 +698,15 @@
         // a gesture to see smooth zooming.  isCanvasGesturing is only used by
         // editors to block accidental single-tap draws.
         try {
-            const iframes = parent.document.getElementsByTagName('iframe');
+            const iframes = document.getElementsByTagName('iframe');
             if (!iframes.length) return;
 
-            let winW = parent.window.innerWidth || parent.document.documentElement.clientWidth;
-            let winH = parent.window.innerHeight || parent.document.documentElement.clientHeight;
+            let winW = window.innerWidth || document.documentElement.clientWidth;
+            let winH = window.innerHeight || document.documentElement.clientHeight;
 
-            if (parent.window.visualViewport) {
-                winW = parent.window.visualViewport.width;
-                winH = parent.window.visualViewport.height;
+            if (window.visualViewport) {
+                winW = window.visualViewport.width;
+                winH = window.visualViewport.height;
             }
 
             // BASE Scale Calculation
@@ -880,12 +880,12 @@
         }
 
         createToolbar() {
-            const btnUndo = parent.document.createElement('button');
+            const btnUndo = document.createElement('button');
             btnUndo.innerHTML = "↩️ Undo";
             btnUndo.style.cssText = btnBase + "color: #333;";
             btnUndo.onclick = (e) => { e.preventDefault(); this.undo(); };
 
-            const btnApply = parent.document.createElement('button');
+            const btnApply = document.createElement('button');
             btnApply.innerHTML = "✅ Apply Paint";
             btnApply.style.cssText = btnBase + "border-color: #10B981; color: #10B981; background: #F0FDF4;";
             btnApply.onclick = (e) => { e.preventDefault(); this.commit(); };
@@ -1055,7 +1055,7 @@
             }).join(';');
 
             const val = ptsStr + ',' + Date.now();
-            const url = new URL(parent.location.href);
+            const url = new URL(window.location.href);
             url.searchParams.set('poly_pts', val);
             url.searchParams.delete('tap'); url.searchParams.delete('box');
             throttledReplaceState(url);
@@ -1124,7 +1124,7 @@
             console.log(`JS: Point tap at (${x}, ${y})`);
 
             // Set URL parameter for Streamlit backend
-            const url = new URL(parent.location.href);
+            const url = new URL(window.location.href);
             url.searchParams.set('tap', `${x},${y},${now}`);
             url.searchParams.delete('box');
             url.searchParams.delete('poly_pts');
@@ -1209,7 +1209,7 @@
                     // 3. Visual Preview (Instant)
                     const iframe = getActiveIframe();
                     if (iframe) {
-                        const winW = parent.window.innerWidth;
+                        const winW = window.innerWidth;
                         const baseScale = Math.min(1.0, (winW - 10) / CANVAS_WIDTH);
 
                         // Apply movement and scale relative to pinch center
@@ -1267,7 +1267,7 @@
         }
 
         sync(z, px, py) {
-            const url = new URL(parent.location.href);
+            const url = new URL(window.location.href);
             url.searchParams.set('zoom_update', z.toFixed(2));
             url.searchParams.set('pan_update', `${px.toFixed(3)},${py.toFixed(3)},${Date.now()}`);
             if (throttledReplaceState(url)) {
