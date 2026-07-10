@@ -37,7 +37,7 @@ from app_config.constants import PerformanceConfig
 initialize_session_state()
 
 # --- WARNING SHIELD: Titanium Silence v4 ---
-st.components.v1.html("""
+st.html("""
     <!-- 📱 MOBILE OPTIMIZATION -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
     <script>
@@ -67,7 +67,7 @@ st.components.v1.html("""
             setInterval(run, 500);
         })();
     </script>
-""", height=0)
+""")
 
 def main():
     setup_styles()
@@ -291,7 +291,7 @@ def main():
                 mask = magic_wand_selection(img, (real_x, real_y), tolerance=st.session_state.get("wand_tolerance", 25))
                 if mask is not None and np.any(mask):
                     st.session_state["pending_selection"] = {'mask': mask, 'point': (real_x, real_y)}
-                    cb_apply_pending(increment_canvas=False, silent=True)
+                    cb_apply_pending(increment_canvas=True, silent=True)
                     st.session_state["render_id"] += 1
                 
                 if "tap" in st.query_params: 
@@ -346,7 +346,7 @@ def main():
 
                 st.session_state["pending_selection"] = {'mask': mask, 'point': (real_x, real_y)}
                 st.session_state["selection_op"] = st.session_state.get("selection_op", "Add")
-                cb_apply_pending(increment_canvas=False, silent=True)
+                cb_apply_pending(increment_canvas=True, silent=True)
                 st.session_state["render_id"] += 1
                 
              # Clear Param
@@ -401,7 +401,7 @@ def main():
                             st.session_state["pending_selection"] = {'mask': mask, 'point': (real_x, real_y)}
                             st.session_state["selection_op"] = st.session_state.get("selection_op", "Add")
                             # Instant apply for point clicks
-                            cb_apply_pending(increment_canvas=False, silent=True)
+                            cb_apply_pending(increment_canvas=True, silent=True)
                             st.session_state["render_id"] += 1
                         
                         if "tap" in st.query_params: 
