@@ -666,7 +666,7 @@ def render_zoom_controls(key_suffix="", context_class=""):
     </style>
     <button id="ag-reset-only-btn" aria-label="Reset View">🎯 Reset View</button>
     """
-    st.html(reset_html)
+    _components.html(reset_html, height=50, scrolling=False)
 
     if context_class:
         st.markdown('</div>', unsafe_allow_html=True)
@@ -959,7 +959,7 @@ def render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_
         p_box_json = str(p_box) if p_box else "null"
         
         js_config = f"<script>const cfg={{ CANVAS_WIDTH: {display_width}, CANVAS_HEIGHT: {display_height}, CUR_PAN_X: {st.session_state['pan_x']}, CUR_PAN_Y: {st.session_state['pan_y']}, ZOOM_LEVEL: {st.session_state.get('zoom_level', 1.0)}, VIEW_W: {view_w}, IMAGE_W: {w}, VIEW_H: {view_h}, IMAGE_H: {h}, DRAWING_MODE: '{drawing_mode}', PENDING_BOX: {p_box_json} }}; window.CANVAS_CONFIG=cfg; if(window.parent) window.parent.CANVAS_CONFIG=cfg;</script><script>{js_template}</script>"
-        st.html(js_config)
+        components.html(js_config, height=0)
 
     # 🔄 SYNC & PROCESS (Silent)
     # DEBUG: Force log raw canvas return
@@ -983,13 +983,12 @@ def render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_
         
         if objects:
             print(f"DEBUG: Canvas Process -> Mode: {tool_mode}, Objects: {len(objects)} Types: {[o.get('type') for o in objects]}")
-            # Desktop clicks are processed here via st_canvas objects, while Mobile taps are caught by app.py
             if "AI Click" in tool_mode:
                 for obj in reversed(objects):
                     if obj["type"] in ["circle", "path"]:
                         rel_x, rel_y = obj["left"], obj["top"]
                         real_x, real_y = int(rel_x / scale_factor) + start_x, int(rel_y / scale_factor) + start_y
-                        click_key = f"{real_x}_{real_y}_{st.session_state.get('picked_color', '')}"
+                        click_key = f"{real_x}_{real_y}_{st.session_state['picked_color']}"
                         if click_key != st.session_state.get("last_click_global"):
                             st.session_state["last_click_global"] = click_key
                             sam.set_image(st.session_state["image"])
@@ -1003,13 +1002,13 @@ def render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_
                             )
                             if mask is not None:
                                 st.session_state["pending_selection"] = {'mask': mask, 'point': (real_x, real_y)}
-                                # CRITICAL: increment_canvas MUST be True, otherwise st_canvas will not redraw the new background!
+                                # ⚡ SMOOTH APPLY: Don't increment canvas_id to prevent flicker, silent mode
                                 if st.session_state.get("ai_click_instant_apply", True): 
-                                    cb_apply_pending(increment_canvas=True, silent=True)
+                                    cb_apply_pending(increment_canvas=False, silent=True)
                                 
                                 st.session_state["render_id"] += 1
-                                # CRITICAL: Explicit rerun is required to push the new canvas_id to the frontend
-                                st.rerun()
+                                # NO EXPLICIT RERUN - Let Streamlit auto-detect state changes
+                                # safe_rerun(scope="fragment")
                         break 
             
             elif "Lasso" in tool_mode and "Polygonal" not in tool_mode:
