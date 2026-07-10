@@ -4,7 +4,6 @@ import streamlit as st
 from PIL import Image
 from paint_core.colorizer import ColorTransferEngine
 from app_config.constants import UIConfig
-from scipy import sparse
 
 def get_crop_params(image_width, image_height, zoom_level, pan_x, pan_y):
     """
@@ -27,7 +26,7 @@ def get_crop_params(image_width, image_height, zoom_level, pan_x, pan_y):
     
     return start_x, start_y, view_w, view_h
 
-def composite_image(original_rgb, masks_data):
+def _internal_composite_image(original_rgb, masks_data):
     """
     Apply all color layers to user image using optimized multi-layer blending.
     PERFORMANCE: Uses incremental background caching to speed up tuning.
@@ -73,6 +72,62 @@ def composite_image(original_rgb, masks_data):
         pass
 
     return result
+
+import logging
+import traceback
+
+def safe_composite_pipeline(original_rgb, masks_data):
+    """
+    DOUBLE-BUFFER RENDERING PIPELINE.
+    Validates the rendered image before allowing it to update the UI.
+    Prevents white screens, blank canvases, and UI flickering.
+    """
+    if original_rgb is None:
+        raise ValueError("Original image is missing.")
+        
+    try:
+        # Run AI Rendering in the Background Buffer
+        back_buffer = _internal_composite_image(original_rgb, masks_data)
+        
+        # ── 1. Validate Render Result ──
+        if back_buffer is None:
+            raise ValueError("Rendering engine returned None.")
+            
+        if not isinstance(back_buffer, np.ndarray):
+            raise TypeError(f"Rendered image is not a numpy array (got {type(back_buffer)}).")
+            
+        # ── 2. Validate Dimensions and Dtype ──
+        if original_rgb.shape != back_buffer.shape:
+            raise ValueError(f"Shape mismatch: Original {original_rgb.shape}, Rendered {back_buffer.shape}")
+            
+        if original_rgb.dtype != back_buffer.dtype:
+            raise TypeError(f"Dtype mismatch: Original {original_rgb.dtype}, Rendered {back_buffer.dtype}")
+            
+        # ── 3. Validate Flatness (Prevent pure white/black screens) ──
+        # A valid photograph will always have some variance. A solid white/black screen has std ~0.
+        std_dev = np.std(back_buffer)
+        if std_dev < 2.0:
+            raise ValueError(f"Rendered image is mathematically flat (std={std_dev:.2f}). Possible math overflow/corruption.")
+            
+        # All validations passed! Update the Front Buffer securely.
+        st.session_state["front_buffer"] = back_buffer
+        st.session_state["render_error"] = None
+        
+        return back_buffer
+        
+    except Exception as e:
+        # 🛑 RENDER FAILED 🛑
+        # Do not overwrite the front_buffer. Log complete traceback.
+        err_msg = f"RENDER PIPELINE FAILED: {str(e)}"
+        print(f"DEBUG: {err_msg}")
+        traceback.print_exc()
+        
+        st.session_state["render_error"] = err_msg
+        
+        # Graceful Fallback: Return the last known good state
+        if st.session_state.get("front_buffer") is not None:
+            return st.session_state["front_buffer"]
+        return original_rgb
 
 def process_lasso_path(scaled_path, w, h, thickness=6, fill=False):
     """
@@ -187,8 +242,7 @@ def composite_image_grayscale_aware(original_rgb, masks_data):
 
     if not gray_mode:
         # Normal path — delegate to existing fast compositor
-        from paint_utils.image_processing import composite_image
-        return composite_image(original_rgb, masks_data)
+        return safe_composite_pipeline(original_rgb, masks_data)
 
     # ── Grayscale-mode path ──────────────────────────────────────────────
     # 1. Build grayscale base
@@ -220,25 +274,16 @@ def composite_image_grayscale_aware(original_rgb, masks_data):
         # Build a fully-colored version of the ORIGINAL image under this mask
         # Use the same LAB recolor as the main engine for consistency
         try:
-            target_L, target_a, target_b = ColorTransferEngine.get_target_lab(color_hex)
+            r, g, b = ColorTransferEngine.hex_to_rgb(color_hex)
+            target_a, target_b = ColorTransferEngine.get_target_ab(color_hex)
 
             orig_f = original_rgb.astype(np.float32) / 255.0
             orig_lab = cv2.cvtColor(orig_f, cv2.COLOR_RGB2Lab)
             L, A, B = cv2.split(orig_lab)
 
-            # Apply Smart Luminance Shift (matches Colorizer logic)
-            # Default: Additive shift with 90% texture preservation
-            valid_mask = mask > 0
-            if np.any(valid_mask):
-                ref_L = np.mean(L[valid_mask])
-            else:
-                ref_L = 75.0
-            ref_L = np.clip(ref_L, 10.0, 95.0)
-            new_L = np.clip(target_L + (L - ref_L) * 0.9, 0, 100)
-            
             new_A = np.full_like(A, target_a)
             new_B = np.full_like(B, target_b)
-            colored_lab = cv2.merge([new_L, new_A, new_B])
+            colored_lab = cv2.merge([L, new_A, new_B])
             colored_rgb = cv2.cvtColor(colored_lab, cv2.COLOR_Lab2RGB)  # float32 0-1
         except Exception:
             colored_rgb = result.copy()

@@ -72,12 +72,9 @@ def mock_sam_predictor(mocker):
         Mock SAM predictor object
     """
     mock_predictor = mocker.Mock()
-    mock_predictor.device = 'cpu'
-    mock_predictor.image_encoder = mocker.Mock()
-    mock_predictor.image_encoder.img_size = 1024
     mock_predictor.set_image = mocker.Mock()
     mock_predictor.predict = mocker.Mock(return_value=(
-        np.ones((3, 100, 100), dtype=bool),  # mask
+        np.ones((100, 100), dtype=bool),  # mask
         np.array([0.9, 0.8, 0.7]),  # scores
         np.zeros((3, 100, 100), dtype=bool)  # logits
     ))

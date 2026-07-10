@@ -17,10 +17,11 @@ from streamlit_image_comparison import image_comparison
 from .encoding import image_to_url_patch
 from .state_manager import cb_undo, cb_redo, cb_clear_all, cb_delete_layer, cb_apply_pending, cb_cancel_pending, preserve_sidebar_state
 from .image_processing import (
-    get_crop_params, composite_image, process_lasso_path,
+    get_crop_params, safe_composite_pipeline, process_lasso_path,
     get_display_base_image, to_grayscale_rgb
 )
 from .sam_loader import get_sam_engine, CHECKPOINT_PATH, MODEL_TYPE
+from .performance import cleanup_session_caches
 
 # --- UI CONSTANTS ---
 TOOL_MAPPING = {
@@ -178,11 +179,10 @@ def st_canvas(*args, **kwargs):
     
     if bg_img is not None:
         width, height = kwargs.get("width"), kwargs.get("height")
-        # PERFORMANCE: Cache key MUST include image_path, render_hash and comparison state to detect changes
+        # PERFORMANCE: Cache key MUST include render_hash and comparison state to detect changes
         comp_flag = str(st.session_state.get("show_comparison", False))
         r_hash = str(st.session_state.get("render_id", 0))
-        img_id = str(st.session_state.get("image_path", "default"))
-        cache_key = f"bg_url_cache_{img_id}_{r_hash}_{comp_flag}"
+        cache_key = f"bg_url_cache_{r_hash}_{comp_flag}"
         
         if cache_key in st.session_state:
             url = st.session_state[cache_key]
@@ -511,16 +511,16 @@ def setup_styles():
         <script>
         (function() {
             // 🔒 LOCK VIEWPORT (Prevent Page Zoom)
-            const meta = document.createElement('meta');
+            const meta = window.parent.document.createElement('meta');
             meta.name = 'viewport';
             meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover';
             
             // Check if meta exists, replace if so, else append
-            const existing = document.querySelector('meta[name="viewport"]');
+            const existing = window.parent.document.querySelector('meta[name="viewport"]');
             if (existing) {
                 existing.content = meta.content;
             } else {
-                document.getElementsByTagName('head')[0].appendChild(meta);
+                window.parent.document.getElementsByTagName('head')[0].appendChild(meta);
             }
 
             const _backupWarn = console.warn;
@@ -538,7 +538,7 @@ def setup_styles():
             // 📱 SIDEBAR BUTTON PERMANENCE (No-Hover Fix)
             const ensureUI = () => {
                 try {
-                    const doc = document;
+                    const doc = window.parent.document;
                     // Neutralize the background overlay that closes the sidebar on random taps
                     const overlayers = doc.querySelectorAll('[data-testid="stSidebar"] + div');
                     overlayers.forEach(ov => {
@@ -551,8 +551,8 @@ def setup_styles():
             };
             
             setInterval(ensureUI, 500); 
-            window.addEventListener('mouseup', ensureUI);
-            window.addEventListener('touchend', ensureUI);
+            window.parent.addEventListener('mouseup', ensureUI);
+            window.parent.addEventListener('touchend', ensureUI);
         })();
         </script>
     """, unsafe_allow_html=True)
@@ -593,6 +593,8 @@ def render_zoom_controls(key_suffix="", context_class=""):
         key_suffix: Unique suffix for widget keys to prevent duplicates.
         context_class: CSS class for responsive hiding.
     """
+    import streamlit.components.v1 as _components
+
     if context_class:
         st.markdown(f'<div class="{context_class}">', unsafe_allow_html=True)
 
@@ -603,7 +605,7 @@ def render_zoom_controls(key_suffix="", context_class=""):
     <script>
     (function() {
         const _findCanvas = () => {
-            const doc = window.parent ? document : document;
+            const doc = window.parent ? window.parent.document : document;
             for (const f of doc.querySelectorAll('iframe')) {
                 try {
                     const w = f.contentWindow;
@@ -664,7 +666,7 @@ def render_zoom_controls(key_suffix="", context_class=""):
     </style>
     <button id="ag-reset-only-btn" aria-label="Reset View">🎯 Reset View</button>
     """
-    st.html(reset_html, unsafe_allow_javascript=True)
+    _components.html(reset_html, height=50, scrolling=False)
 
     if context_class:
         st.markdown('</div>', unsafe_allow_html=True)
@@ -673,7 +675,7 @@ def render_zoom_controls(key_suffix="", context_class=""):
 
 
 @st.fragment
-def render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_w, view_h, scale_factor, h, w, drawing_mode, image_id=""):
+def render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_w, view_h, scale_factor, h, w, drawing_mode):
     """Isolated heavy-lifting fragment for canvas and backend mask generation."""
     # --- 1. CAPTURE & CLEAR INTERACTION PARAMS ---
     query_params = st.query_params
@@ -687,7 +689,7 @@ def render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_
     # 🧼 TOOL SWITCH CLEANUP (Silent)
     if st.session_state.get("tool_switched_reset", False):
         st.session_state["tool_switched_reset"] = False
-        st.html("<script>if(window.STREAMLIT_POLY_POINTS) window.STREAMLIT_POLY_POINTS = [];</script>", unsafe_allow_javascript=True)
+        components.html("<script>if(window.parent.STREAMLIT_POLY_POINTS) window.parent.STREAMLIT_POLY_POINTS = [];</script>", height=0)
 
     # Signal ID Handling: Normalize signals to extract timestamp if present
     def extract_signal(raw_str):
@@ -770,10 +772,13 @@ def render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_
     
     # 3️⃣ Apply paint layers onto the strictly selected base_image
     # The native ColorTransferEngine correctly maps color over grayscale.
-    from paint_utils.image_processing import composite_image
-    painted_img = composite_image(base_image, st.session_state["masks"])
+    from paint_utils.image_processing import safe_composite_pipeline
+    painted_img = safe_composite_pipeline(base_image, st.session_state["masks"])
     show_comp = st.session_state.get("show_comparison", False)
     
+    if st.session_state.get("render_error"):
+        st.toast(st.session_state["render_error"], icon="🛡️")
+        
     # In compare mode show base (gray or color), else painted
     if show_comp:
         display_img = base_image
@@ -927,15 +932,20 @@ def render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_
                 })
         except: pass
 
+    # Hex to Hex-with-opacity conversion for brush strokes
+    picked_hex = st.session_state.get("picked_color", "#FF4B4B")
+    
     canvas_result = st_canvas(
         fill_color="rgba(255, 165, 0, 0.3)", 
-        stroke_width=st.session_state.get("lasso_thickness", 6), 
-        stroke_color="#FF4B4B",
-        background_image=final_display_image, update_streamlit=True, height=display_height, width=display_width,
+        stroke_width=st.session_state.get("lasso_thickness", 20) if drawing_mode == "freedraw" else 6, 
+        stroke_color=picked_hex,
+        background_image=final_display_image, 
+        update_streamlit=True, 
+        height=display_height, width=display_width,
         drawing_mode=drawing_mode, initial_drawing=initial_drawing, 
         point_display_radius=20 if drawing_mode in ["point", "freedraw", "polygon"] else 0,
         key=f"canvas_main_{st.session_state.get('canvas_id', 0)}", 
-        display_toolbar=False
+        display_toolbar=True
     )
 
     # 📱 JS Handler (Silent, no elements)
@@ -948,8 +958,8 @@ def render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_
         p_box = st.session_state.get("pending_box_coords", None)
         p_box_json = str(p_box) if p_box else "null"
         
-        js_config = f"<script>const cfg={{ CANVAS_WIDTH: {display_width}, CANVAS_HEIGHT: {display_height}, CUR_PAN_X: {st.session_state['pan_x']}, CUR_PAN_Y: {st.session_state['pan_y']}, ZOOM_LEVEL: {st.session_state.get('zoom_level', 1.0)}, VIEW_W: {view_w}, IMAGE_W: {w}, VIEW_H: {view_h}, IMAGE_H: {h}, DRAWING_MODE: '{drawing_mode}', PENDING_BOX: {p_box_json} }}; window.CANVAS_CONFIG=cfg; </script><script>{js_template}</script>"
-        st.html(js_config, unsafe_allow_javascript=True)
+        js_config = f"<script>const cfg={{ CANVAS_WIDTH: {display_width}, CANVAS_HEIGHT: {display_height}, CUR_PAN_X: {st.session_state['pan_x']}, CUR_PAN_Y: {st.session_state['pan_y']}, ZOOM_LEVEL: {st.session_state.get('zoom_level', 1.0)}, VIEW_W: {view_w}, IMAGE_W: {w}, VIEW_H: {view_h}, IMAGE_H: {h}, DRAWING_MODE: '{drawing_mode}', PENDING_BOX: {p_box_json} }}; window.CANVAS_CONFIG=cfg; if(window.parent) window.parent.CANVAS_CONFIG=cfg;</script><script>{js_template}</script>"
+        components.html(js_config, height=0)
 
     # 🔄 SYNC & PROCESS (Silent)
     # DEBUG: Force log raw canvas return
@@ -967,8 +977,7 @@ def render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_
                 objects = []
                 st.session_state["canvas_raw"] = {}
                 st.session_state["pending_boxes"] = []
-                # Force another rerun to clear the UI ghost
-                safe_rerun()
+                # Removed double rerun to stop flickering. The new canvas_id will clear the UI.
 
         tool_mode = st.session_state.get("selection_tool", "✨ AI Object (Box)")
         
@@ -1200,7 +1209,7 @@ def render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_
                                 st.session_state["render_id"] += 1
                                 for pk in ["poly_pts", "force_finish", "tap"]:
                                     if pk in st.query_params: st.query_params.pop(pk, None)
-                                st.html("<script>window.STREAMLIT_POLY_POINTS = [];</script>", unsafe_allow_javascript=True)
+                                components.html("<script>window.parent.STREAMLIT_POLY_POINTS = [];</script>", height=0)
                                 safe_rerun()
                             else:
                                 if force_finish: print(f"DEBUG: Skipping Poly Apply - Empty Mask")
@@ -1419,9 +1428,9 @@ def render_visualizer_engine_v11(display_width):
         else:
             base_image = st.session_state["image"]
 
-        from paint_utils.image_processing import composite_image
+        from paint_utils.image_processing import safe_composite_pipeline
         with c1: st.image(base_image, caption="Original", use_container_width=True)
-        with c2: st.image(composite_image(base_image, st.session_state["masks"]), caption="Painted", use_container_width=True)
+        with c2: st.image(safe_composite_pipeline(base_image, st.session_state["masks"]), caption="Painted", use_container_width=True)
         st.divider()
 
     # 3. THE CANVAS (Isolated fragment)
@@ -1436,10 +1445,7 @@ def render_visualizer_engine_v11(display_width):
     # Calculate height based on image aspect ratio and chosen display width
     display_height = int(h * (display_width / w))
     
-    # Pass image_path and render_id to force fragment updates on change
-    img_id = st.session_state.get("image_path", "")
-    r_id = st.session_state.get("render_id", 0)
-    render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_w, view_h, scale_factor, h, w, drawing_mode, image_id=f"{img_id}_{r_id}")
+    render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_w, view_h, scale_factor, h, w, drawing_mode)
 
     # UI Controls (Zoom, Undo, etc.) have been moved INSIDE the fragment
     pass
@@ -1498,18 +1504,15 @@ def render_sidebar(sam, device_str):
                             del st.session_state[k]
                     st.session_state["render_cache"] = None
                     st.session_state["composited_cache"] = None
-                    # Remove any session_state key that has 'cache' in its name
-                    keys_to_delete = [k for k in list(st.session_state.keys()) if 'cache' in k.lower()]
-                    for k in keys_to_delete:
-                        del st.session_state[k]
+                    st.cache_data.clear()
                     st.session_state["uploader_id"] += 1 
                     preserve_sidebar_state()
                     safe_rerun()
         
         if uploaded_file is not None:
             # We enforce reprocessing if the file_key changes OR if `image` state is None 
-            # 🛡️ Stable Key: Uses name and size to avoid infinite rerun loops while the Cache Purge handles fresh rendering.
-            file_key = f"{uploaded_file.name}_{uploaded_file.size}"
+            # (which happens if they wiped out state but Streamlit kept the uploaded_file instance natively)
+            file_key = getattr(uploaded_file, "file_id", f"{uploaded_file.name}_{uploaded_file.size}")
             if st.session_state.get("image_path") != file_key or st.session_state.get("image") is None:
                 st.toast(f"📸 Loading New Image: {uploaded_file.name}", icon="🔄")
                 uploaded_file.seek(0)
@@ -1532,19 +1535,15 @@ def render_sidebar(sam, device_str):
                 st.session_state["zoom_level"] = 1.0
                 st.session_state["pan_x"] = 0.5
                 st.session_state["pan_y"] = 0.5
-                st.session_state["render_id"] = st.session_state.get("render_id", 0) + 1
+                st.session_state["render_id"] = 0
                 st.session_state["canvas_id"] = st.session_state.get("canvas_id", 0) + 1
                 
                 # Force invalidate SAM Engine states to prevent phantom "old image" masks
                 sam.is_image_set = False
                 
-                # 🧹 Aggressive Cache Purge: Remove all stale background and composite URLs
-                for k in list(st.session_state.keys()):
-                    if any(k.startswith(p) for p in ["bg_url_cache_", "base_l_", "comp_cache_", "flattened_"]):
-                        del st.session_state[k]
-                
-                st.session_state["render_cache"] = None
-                st.session_state["composited_cache"] = None
+                # 🧹 Targeted cache cleanup
+                from paint_utils.performance import cleanup_session_caches
+                cleanup_session_caches(aggressive=True)
                 
                 preserve_sidebar_state()
                 st.rerun()
@@ -1601,8 +1600,8 @@ def render_sidebar(sam, device_str):
                         else:
                             base_dl_img = original_img
 
-                        from paint_utils.image_processing import composite_image
-                        dl_comp = composite_image(base_dl_img, high_res_masks)
+                        from paint_utils.image_processing import safe_composite_pipeline
+                        dl_comp = safe_composite_pipeline(base_dl_img, high_res_masks)
                         dl_pil = Image.fromarray(dl_comp)
                         dl_buf = io.BytesIO()
                         dl_pil.save(dl_buf, format="PNG")
@@ -1694,7 +1693,7 @@ def render_sidebar(sam, device_str):
                 #         st.session_state["force_finish_poly"] = False
                 #         st.query_params.pop("poly_pts", None)
                 #         import streamlit.components.v1 as components
-                #         components.html("<script>window.STREAMLIT_POLY_POINTS = [];</script>", height=0)
+                #         components.html("<script>window.parent.STREAMLIT_POLY_POINTS = [];</script>", height=0)
                 if "Polygonal Lasso" in current_tool:
                     pass
                 elif "Lasso (Freehand)" in current_tool:
@@ -1811,7 +1810,7 @@ def render_comparison_slider():
         base_image = st.session_state["image"]
 
     original_img = base_image
-    painted_img = composite_image(original_img, st.session_state['masks'])
+    painted_img = safe_composite_pipeline(original_img, st.session_state['masks'])
     
     # Convert RGB to BGR for comparison component (if needed) or keep RGB
     # image_comparison expects PIL or arrays

@@ -1,237 +1,191 @@
 import cv2
 import numpy as np
-from PIL import Image
+import streamlit as st
 from scipy import sparse
 from app_config.constants import ColorizerConfig
 
-def guided_filter_mask(I, p, r=4, eps=0.01):
+# ─────────────────────────────────────────────────────────────────────────────
+# PER-IMAGE SCENE PRIORS (cached once, reused per click)
+# ─────────────────────────────────────────────────────────────────────────────
+def _get_scene_priors(image_rgb: np.ndarray):
     """
-    Applies Guided Filter to mask p using guide image I to align edges precisely.
+    Returns (img_lab, L_base, L_detail, gray) for image_rgb.
+    Uses Edge-Aware Guided Filtering for Intrinsic Image Decomposition.
     """
-    if len(I.shape) == 3:
-        I_gray = cv2.cvtColor((I * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
+    h, w = image_rgb.shape[:2]
+    key_id  = id(image_rgb)
+    key_dim = (h, w)
+
+    if (st.session_state.get("_scene_id")  == key_id and
+            st.session_state.get("_scene_dim") == key_dim and
+            "_scene_priors" in st.session_state):
+        return st.session_state["_scene_priors"]
+
+    # 1. Convert to LAB float32 (L: 0-100, A/B: -128 to 127)
+    img_f = image_rgb.astype(np.float32) / 255.0
+    img_lab = cv2.cvtColor(img_f, cv2.COLOR_RGB2Lab)
+    
+    L_channel = img_lab[:, :, 0]
+    
+    # 2. Guided Filter for Intrinsic Decomposition (Base/Detail separation)
+    # The base contains illumination (lighting, shadows), detail contains texture (plaster, brick).
+    if hasattr(cv2, 'ximgproc'):
+        L_base = cv2.ximgproc.guidedFilter(
+            guide=np.uint8(L_channel * 2.55), 
+            src=np.uint8(L_channel * 2.55), 
+            radius=15, eps=100
+        ).astype(np.float32) / 2.55
     else:
-        I_gray = I.astype(np.float32)
-    
-    p = p.astype(np.float32)
-    
-    mean_I = cv2.boxFilter(I_gray, -1, (r, r))
-    mean_p = cv2.boxFilter(p, -1, (r, r))
-    mean_Ip = cv2.boxFilter(I_gray * p, -1, (r, r))
-    cov_Ip = mean_Ip - mean_I * mean_p
-    
-    mean_II = cv2.boxFilter(I_gray * I_gray, -1, (r, r))
-    var_I = mean_II - mean_I * mean_I
-    
-    a = cov_Ip / (var_I + eps)
-    b = mean_p - a * mean_I
-    
-    mean_a = cv2.boxFilter(a, -1, (r, r))
-    mean_b = cv2.boxFilter(b, -1, (r, r))
-    
-    q = mean_a * I_gray + mean_b
-    return np.clip(q, 0.0, 1.0)
-
-class ColorTransferEngine:
-    @staticmethod
-    def hex_to_rgb(hex_color):
-        """Convert HEX string to RGB tuple."""
-        if not isinstance(hex_color, str):
-            raise TypeError("hex_color must be a string")
-        if not hex_color.startswith('#'):
-            raise ValueError("Invalid hex color: missing # prefix")
-        if len(hex_color) != 7:
-            raise ValueError(f"hex_color must be 7 characters (got {len(hex_color)})")
+        # Fallback to bilateral if ximgproc is missing
+        L_base = cv2.bilateralFilter(L_channel, 15, 20, 20)
         
-        hex_stripped = hex_color[1:]
-        try:
-            return tuple(int(hex_stripped[i:i+2], 16) for i in (0, 2, 4))
-        except ValueError as e:
-            raise ValueError(f"Invalid hex color '{hex_color}': {e}")
+    L_detail = L_channel - L_base
+    
+    gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+
+    priors = (img_lab, L_base, L_detail, gray)
+    st.session_state["_scene_priors"] = priors
+    st.session_state["_scene_id"]     = key_id
+    st.session_state["_scene_dim"]    = key_dim
+
+    # Invalidate layer composite cache whenever base image changes
+    st.session_state["_layer_cache"]     = None
+    st.session_state["_layer_cache_len"] = 0
+    st.session_state["_layer_cache_lid"] = None
+
+    return priors
+
+# ─────────────────────────────────────────────────────────────────────────────
+class ColorTransferEngine:
 
     @staticmethod
-    def get_target_lab(color_hex):
-        """Calculate the LAB L/A/B channels for a hex color."""
+    def hex_to_rgb(hex_color: str):
+        h = hex_color.lstrip('#')
+        return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+
+    @staticmethod
+    @st.cache_data
+    def get_target_lab(color_hex: str):
+        """Cached full LAB L,a,b for a hex color."""
         rgb = ColorTransferEngine.hex_to_rgb(color_hex)
-        pixel = np.array([[[rgb[0], rgb[1], rgb[2]]]], dtype=np.uint8)
-        lab = cv2.cvtColor(pixel.astype(np.float32)/255.0, cv2.COLOR_RGB2Lab)
+        px  = np.array([[[*rgb]]], dtype=np.uint8)
+        lab = cv2.cvtColor(px.astype(np.float32)/255.0, cv2.COLOR_RGB2Lab)
         return float(lab[0, 0, 0]), float(lab[0, 0, 1]), float(lab[0, 0, 2])
 
     @staticmethod
-    def apply_color(image_rgb, mask, target_color_hex, intensity=1.0, seed_point=None, use_adaptive=False):
-        """
-        Apply color using premium LAB blending.
-        """
-        # Validate inputs
-        if not isinstance(image_rgb, np.ndarray) or not isinstance(mask, np.ndarray):
-            raise ValueError("Inputs must be numpy arrays")
-            
-        # Decompress sparse masks
-        if sparse.issparse(mask):
-            mask = mask.toarray()
-            
-        # Ensure mask matches image dimension
-        if mask.shape[:2] != image_rgb.shape[:2]:
-            raise ValueError("mask dimensions must match image dimensions")
-            
-        if not mask.any():
-            return image_rgb.copy()
-            
-        # Clamp intensity to [0.0, 1.0]
-        intensity = max(0.0, min(float(intensity), 1.0))
-            
-        image_rgb = image_rgb.astype(np.uint8)
-        h, w = image_rgb.shape[:2]
-        
-        mask_f = mask.astype(np.float32)
-        
-        # Align mask to physical edges using Guided Filter
-        img_f = image_rgb.astype(np.float32) / 255.0
-        mask_aligned = guided_filter_mask(img_f, mask_f, r=6, eps=0.01)
-        
-        # Feather mask slightly
-        mask_soft = cv2.GaussianBlur(mask_aligned, (3, 3), 0)
-        mask_3ch = np.stack([mask_soft] * 3, axis=-1) * intensity
-        
-        # Convert image to LAB
-        img_lab = cv2.cvtColor(img_f, cv2.COLOR_RGB2Lab)
-        L, A, B = cv2.split(img_lab)
-        
-        # Target color in LAB
-        target_L, target_a, target_b = ColorTransferEngine.get_target_lab(target_color_hex)
-        
-        # Premium Additive Luminance Blending to preserve texture/lighting
-        valid_mask = mask_aligned > 0.05
-        ref_L = np.mean(L[valid_mask]) if np.any(valid_mask) else 75.0
-        ref_L = np.clip(ref_L, 10.0, 95.0)
-        
-        # Additive details preservation: L_new = target_L + (L_orig - ref_L) * contrast_scale
-        new_L = np.clip(target_L + (L - ref_L) * 0.85, 0.0, 100.0)
-        
-        new_lab = cv2.merge([new_L, np.full_like(A, target_a), np.full_like(B, target_b)])
-        recolored_rgb = cv2.cvtColor(new_lab, cv2.COLOR_Lab2RGB)
-        
-        # Blend
-        result_float = (recolored_rgb * mask_3ch) + (img_f * (1.0 - mask_3ch))
-        return np.clip(result_float * 255.0, 0, 255).astype(np.uint8)
+    def apply_color(image_rgb, mask, target_color_hex,
+                    intensity=1.0, seed_point=None, use_adaptive=False):
+        return ColorTransferEngine.composite_multiple_layers(
+            image_rgb,
+            [{'mask': mask, 'color': target_color_hex}]
+        )
 
     @staticmethod
-    def composite_multiple_layers(image_rgb, masks_data):
+    def composite_multiple_layers(image_rgb: np.ndarray, masks_data: list) -> np.ndarray:
         """
-        Single-Pass Compositor utilizing premium LAB blending and edge-aligned masks.
+        True Physically Realistic Paint Rendering using LAB Intrinsic Image Decomposition.
+        Implements Albedo Replacement and Global Illumination Normalization.
         """
         if not masks_data:
             return image_rgb.copy()
 
         h, w = image_rgb.shape[:2]
-        img_f = image_rgb.astype(np.float32) / 255.0
-        img_lab = cv2.cvtColor(img_f, cv2.COLOR_RGB2Lab)
-        base_L, base_A, base_B = cv2.split(img_lab)
 
-        curr_L_mod = base_L.copy()
-        curr_A = base_A.copy()
-        curr_B = base_B.copy()
+        # ── Scene priors (cached per image) ─────────────────────────────────
+        img_lab, L_base, L_detail, gray_guide = _get_scene_priors(image_rgb)
 
+        # We DO NOT accumulate colors! Every layer replaces the albedo directly from the RAW image.
+        # This prevents color stacking/mutation when repainting.
+        curr_lab = img_lab.copy()
+
+        # ── Composite each layer ──────────────────────────────────────────────
         for data in masks_data:
-            mask = data['mask']
+            mask      = data.get('mask')
             color_hex = data.get('color')
-            if not color_hex:
+            if mask is None or not color_hex:
                 continue
 
             if sparse.issparse(mask):
                 mask = mask.toarray()
 
             if mask.shape[:2] != (h, w):
-                mask_uint8 = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
-                mask_f = mask_uint8.astype(np.float32)
-            else:
-                mask_f = mask.astype(np.float32)
+                mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
 
-            if mask_f.max() > 1.0:
-                mask_f /= 255.0
+            mask_bin = (mask > 0).astype(np.float32)
 
-            # Guided Filter mask alignment to avoid bleeding on other elements
-            mask_aligned = guided_filter_mask(img_f, mask_f, r=6, eps=0.01)
-
-            # Apply user softness / refinement
+            # Refinement
             refinement = data.get('refinement', 0)
             if refinement != 0:
-                k_size = abs(refinement) * 2 + 1
-                refine_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_size, k_size))
-                if refinement > 0:
-                    mask_aligned = cv2.dilate(mask_aligned, refine_kernel)
-                else:
-                    mask_aligned = cv2.erode(mask_aligned, refine_kernel)
+                k  = abs(refinement) * 2 + 1
+                rk = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+                mask_bin = (cv2.dilate(mask_bin, rk) if refinement > 0 else cv2.erode(mask_bin, rk))
 
+            # ── Edge-Aware Poisson-style Alpha Mask ──────────────────────────────
             user_soft = data.get('softness', 0)
-            blur_val = ((user_soft * 4) | 1, (user_soft * 4) | 1) if user_soft > 0 else (3, 3)
-            mask_soft = cv2.GaussianBlur(mask_aligned, blur_val, 0)
-
-            # Target LAB coordinates
-            target_L, target_a, target_b = ColorTransferEngine.get_target_lab(color_hex)
-
-            # Get reference brightness
-            valid_mask = mask_aligned > 0.05
-            ref_L = np.mean(base_L[valid_mask]) if np.any(valid_mask) else 75.0
-            ref_L = np.clip(ref_L, 10.0, 95.0)
-
-            # Finish adjusters
-            finish = data.get('finish', 'Standard')
-            if finish == 'Matte':
-                layer_L = np.clip(target_L + (base_L - ref_L) * 0.75, 0, 100)
-            elif finish == 'Gloss':
-                layer_L = np.clip(target_L + (base_L - ref_L) * 1.1 + 5, 0, 100)
-            else:  # Standard / Satin
-                layer_L = np.clip(target_L + (base_L - ref_L) * 0.85, 0, 100)
-
-            # Blend channels
-            curr_L_mod = (layer_L * mask_soft) + (curr_L_mod * (1.0 - mask_soft))
-            curr_A = (target_a * mask_soft) + (curr_A * (1.0 - mask_soft))
-            curr_B = (target_b * mask_soft) + (curr_B * (1.0 - mask_soft))
-
-        # Re-merge to RGB
-        final_lab = cv2.merge([curr_L_mod.astype(np.float32), curr_A.astype(np.float32), curr_B.astype(np.float32)])
-        final_rgb = cv2.cvtColor(final_lab, cv2.COLOR_Lab2RGB)
-
-        return np.clip(final_rgb * 255.0, 0, 255).astype(np.uint8)
-
-    @staticmethod
-    def apply_texture(image_rgb, mask, texture_rgb, opacity=0.8):
-        """
-        Apply a texture overlay respecting base lighting details.
-        """
-        image_rgb = image_rgb.astype(np.uint8)
-        h, w = image_rgb.shape[:2]
-        
-        if sparse.issparse(mask):
-            mask = mask.toarray()
-            
-        mask_f = mask.astype(np.float32)
-        img_f = image_rgb.astype(np.float32) / 255.0
-        mask_aligned = guided_filter_mask(img_f, mask_f, r=6, eps=0.01)
-        mask_soft = cv2.GaussianBlur(mask_aligned, (5, 5), 0)
-        mask_3ch = np.stack([mask_soft] * 3, axis=-1)
-        
-        # Tile texture
-        th, tw = texture_rgb.shape[:2]
-        if max(th, tw) > ColorizerConfig.MAX_TEXTURE_SIZE:
-            scale = ColorizerConfig.MAX_TEXTURE_SIZE / max(th, tw)
-            texture_rgb = cv2.resize(texture_rgb, (0, 0), fx=scale, fy=scale)
-            th, tw = texture_rgb.shape[:2]
-            
-        tiled_texture = np.zeros_like(image_rgb)
-        for i in range(0, h, th):
-            for j in range(0, w, tw):
-                curr_h = min(th, h - i)
-                curr_w = min(tw, w - j)
-                tiled_texture[i:i+curr_h, j:j+curr_w] = texture_rgb[:curr_h, :curr_w]
+            if hasattr(cv2, 'ximgproc'):
+                radius = 5 + (user_soft * 3)
+                mask_soft = cv2.ximgproc.guidedFilter(
+                    guide=gray_guide, 
+                    src=mask_bin, 
+                    radius=radius, eps=10.0
+                )
+            else:
+                blur_sigma = max(1, user_soft * 2 + 2)
+                mask_soft = cv2.GaussianBlur(mask_bin, (blur_sigma*2+1, blur_sigma*2+1), blur_sigma)
                 
-        tex_float = tiled_texture.astype(np.float32) / 255.0
-        gray = cv2.cvtColor(img_f, cv2.COLOR_RGB2GRAY)
-        gray_3ch = np.stack([gray] * 3, axis=-1)
-        
-        # Multiply blending
-        blended = np.clip(tex_float * gray_3ch * ColorizerConfig.TEXTURE_BRIGHTNESS_BOOST, 0.0, 1.0)
-        final_mask = mask_3ch * opacity
-        output = (blended * final_mask) + (img_f * (1.0 - final_mask))
-        return np.clip(output * 255.0, 0, 255).astype(np.uint8)
+            mask_soft = np.clip(mask_soft, 0.0, 1.0)
+            mask_soft_3ch = mask_soft[:, :, np.newaxis]
+
+            # ── True Color Transfer (Intrinsic Decomposition) ────────────────────
+            tgt_L, tgt_A, tgt_B = ColorTransferEngine.get_target_lab(color_hex)
+            
+            # Global Illumination Normalization
+            # Instead of anchoring to the 80th percentile of the whole image,
+            # we anchor to the median illumination of ONLY the painted wall.
+            # This ensures the wall receives ONE CONTINUOUS uniform shade.
+            wall_pixels = L_base[mask_bin > 0]
+            if len(wall_pixels) > 0:
+                wall_anchor = float(np.median(wall_pixels))
+            else:
+                wall_anchor = float(np.percentile(L_base, 80))
+            
+            # The l_shift represents the natural lighting variation (shadows, highlights)
+            l_shift = L_base - wall_anchor
+            
+            # Normalize the wall luminance tightly to the target color
+            # We compress the lighting variance slightly so shadows don't break the color
+            compressed_shift = np.where(l_shift < 0, l_shift * 0.7, l_shift)
+            new_L_base = tgt_L + compressed_shift
+            
+            # ── Apply Finishes ──────────────────────────────────────────────────
+            finish = data.get('finish', 'Standard')
+            mod_detail = L_detail.copy()
+            
+            if finish == 'Matte':
+                mod_detail *= 0.6
+                new_L_base = np.where(new_L_base > 85, 85 + (new_L_base - 85)*0.3, new_L_base)
+            elif finish == 'Gloss':
+                mod_detail *= 1.3
+                new_L_base = np.where(new_L_base > 75, new_L_base * 1.1, new_L_base)
+            elif finish == 'Satin':
+                mod_detail *= 0.9
+
+            final_L = np.clip(new_L_base + mod_detail, 0.0, 100.0)
+            
+            # TRUE ALBEDO REPLACEMENT: We replace A and B entirely, removing the old wall color
+            final_A = np.full_like(curr_lab[:, :, 1], tgt_A)
+            final_B = np.full_like(curr_lab[:, :, 2], tgt_B)
+            
+            painted_lab = np.stack([final_L, final_A, final_B], axis=-1)
+
+            # ── Absolute Overwrite Blending ──────────────────────────────────────
+            # Because we operate on img_lab directly, when we apply mask_soft_3ch, 
+            # we seamlessly overwrite any previous paint layers with the new paint layer 
+            # while feathering the edges flawlessly into the original background!
+            curr_lab = (painted_lab * mask_soft_3ch) + (curr_lab * (1.0 - mask_soft_3ch))
+
+        # Convert back to RGB
+        final_rgb_f = cv2.cvtColor(curr_lab, cv2.COLOR_Lab2RGB)
+        final_rgb = np.clip(final_rgb_f * 255.0, 0, 255).astype(np.uint8)
+
+        return final_rgb

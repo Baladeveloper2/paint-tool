@@ -20,10 +20,6 @@ onnxruntime>=1.15.0
 # SAM Model (MobileSAM)
 git+https://github.com/ChaoningZhang/MobileSAM.git@master
 
-# New AI Pipeline (YOLOv8 + Mask2Former + SAM2)
-ultralytics>=8.0.0
-transformers>=4.40.0
-
 # Scientific Computing
 scipy>=1.11.0
 
