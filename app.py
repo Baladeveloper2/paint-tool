@@ -272,6 +272,7 @@ def main():
         # Determine tool type for specific handling
         current_tool = st.session_state.get("selection_tool", "")
         is_wand = "Magic Wand" in current_tool
+        is_ai_point = "AI Click" in current_tool or "Wall Click" in current_tool
         
         if is_wand:
             print(f"DEBUG: Processing Magic Wand Tap -> {tap_param}")
@@ -304,47 +305,48 @@ def main():
                     del st.query_params["tap"]
         
         # --- AI POINT HANDLER ---
-        print(f"DEBUG: Processing Mobile Tap (AI) -> {tap_param}")
-        
-        if st.session_state.get("ai_processing", False):
-            print("DEBUG: Duplicate Tap Ignored")
-            if "tap" in st.query_params: 
-                del st.query_params["tap"]
-            st.stop()
+        elif is_ai_point:
+            print(f"DEBUG: Processing Mobile Tap (AI) -> {tap_param}")
             
-        st.session_state["ai_processing"] = True
-        
-        try:
-            with st.spinner("👆 AI is analyzing object..."):
-                print("✓ Processing Locked")
+            if st.session_state.get("ai_processing", False):
+                print("DEBUG: Duplicate Tap Ignored")
+                if "tap" in st.query_params: 
+                    del st.query_params["tap"]
+                st.stop()
                 
-                parts = tap_param.split(",")
-                if len(parts) >= 2:
-                    x, y = int(parts[0].strip()), int(parts[1].strip())
-                    img = st.session_state["image"]
-                    h, w = img.shape[:2]
-                    display_width = 800
-                    zoom = st.session_state.get("zoom_level", 1.0)
-                    pan_x = st.session_state.get("pan_x", 0.5)
-                    pan_y = st.session_state.get("pan_y", 0.5)
-                    start_x, start_y, view_w, view_h = get_crop_params(w, h, zoom, pan_x, pan_y)
-                    scale_factor = display_width / view_w
+            st.session_state["ai_processing"] = True
+            
+            try:
+                with st.spinner("👆 AI is analyzing object..."):
+                    print("✓ Processing Locked")
                     
-                    real_x = int(x / scale_factor) + start_x
-                    real_y = int(y / scale_factor) + start_y
-                    
-                    print("✓ Click Coordinates: ", real_x, real_y)
-                    
-                    # 1. Set Image (Synchronous)
-                    if not getattr(sam, "is_image_set", False) or getattr(sam, "image_rgb", None) is None:
-                        sam.set_image(img)
-                    pass  # Handled in segmentation.py
-                    
-                    # 2. SAM Prediction
-                    print("✓ SAM Prediction Started")
-                    current_tool = st.session_state.get("selection_tool", "")
-                    is_wall_click_mode = "Wall Click" in current_tool
-                    is_wall_mode = st.session_state.get("is_wall_only", False)
+                    parts = tap_param.split(",")
+                    if len(parts) >= 2:
+                        x, y = int(parts[0].strip()), int(parts[1].strip())
+                        img = st.session_state["image"]
+                        h, w = img.shape[:2]
+                        display_width = 800
+                        zoom = st.session_state.get("zoom_level", 1.0)
+                        pan_x = st.session_state.get("pan_x", 0.5)
+                        pan_y = st.session_state.get("pan_y", 0.5)
+                        start_x, start_y, view_w, view_h = get_crop_params(w, h, zoom, pan_x, pan_y)
+                        scale_factor = display_width / view_w
+                        
+                        real_x = int(x / scale_factor) + start_x
+                        real_y = int(y / scale_factor) + start_y
+                        
+                        print("✓ Click Coordinates: ", real_x, real_y)
+                        
+                        # 1. Set Image (Synchronous)
+                        if not getattr(sam, "is_image_set", False) or getattr(sam, "image_rgb", None) is None:
+                            sam.set_image(img)
+                        pass  # Handled in segmentation.py
+                        
+                        # 2. SAM Prediction
+                        print("✓ SAM Prediction Started")
+                        is_wall_click_mode = "Wall Click" in current_tool
+                        is_wall_mode = st.session_state.get("is_wall_only", False)
+
                     
                     mask = sam.generate_mask(
                         point_coords=[real_x, real_y], 
@@ -384,19 +386,19 @@ def main():
                         st.toast("Mask generated but paint application failed.", icon="⚠️")
                         print("DEBUG: Mask generation failed or returned None.")
                         
-        except Exception as e:
-            print(f"DEBUG: Tap Pipeline Error: {e}")
-            import sys
-            print("--- FULL TRACEBACK ---")
-            traceback.print_exc(file=sys.stdout)
-            print("----------------------")
-        finally:
-            print("✓ UI Updated")
-            print("DEBUG: Processing Unlocked")
-            st.session_state["ai_processing"] = False
-            if "tap" in st.query_params: 
-                del st.query_params["tap"]
-            st.rerun()
+            except Exception as e:
+                print(f"DEBUG: Tap Pipeline Error: {e}")
+                import sys
+                print("--- FULL TRACEBACK ---")
+                traceback.print_exc(file=sys.stdout)
+                print("----------------------")
+            finally:
+                print("✓ UI Updated")
+                print("DEBUG: Processing Unlocked")
+                st.session_state["ai_processing"] = False
+                if "tap" in st.query_params: 
+                    del st.query_params["tap"]
+                st.rerun()
 
     # --- 2b️⃣ CAPTURE POLY PARAM IMMEDIATELY ---
     poly_param = q_params.get("poly_pts", None)
@@ -449,14 +451,14 @@ def main():
                 # "Polygonal Lasso" -> AI Assisted (SAM Box Prompts)
                 
                 current_tool = st.session_state.get("selection_tool", "")
-                is_freehand = "Lasso (Freehand)" in current_tool
+                is_manual_polygon = "Polygonal Lasso" in current_tool
                 
                 # Check for explicit "Fill Selection" toggle (overrides default)
-                # Default for Freehand is True (Manual), Default for Polygon is False (AI)
-                force_manual = st.session_state.get("fill_selection", is_freehand)
+                # Default for Polygon is True (Manual Fill)
+                force_manual = st.session_state.get("fill_selection", is_manual_polygon)
                 
-                if is_freehand or force_manual:
-                     print("DEBUG: processing as MANUAL MASK (Freehand)")
+                if force_manual:
+                     print("DEBUG: processing as MANUAL MASK (Polygon)")
                      # Create blank mask
                      mask_shape = (h, w)
                      manual_mask = np.zeros(mask_shape, dtype=np.uint8)
