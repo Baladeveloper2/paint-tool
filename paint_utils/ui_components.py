@@ -666,7 +666,7 @@ def render_zoom_controls(key_suffix="", context_class=""):
     </style>
     <button id="ag-reset-only-btn" aria-label="Reset View">🎯 Reset View</button>
     """
-    _components.html(reset_html, height=50, scrolling=False)
+    st.html(reset_html)
 
     if context_class:
         st.markdown('</div>', unsafe_allow_html=True)
@@ -1004,11 +1004,10 @@ def render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_
                                 st.session_state["pending_selection"] = {'mask': mask, 'point': (real_x, real_y)}
                                 # ⚡ SMOOTH APPLY: Don't increment canvas_id to prevent flicker, silent mode
                                 if st.session_state.get("ai_click_instant_apply", True): 
-                                    cb_apply_pending(increment_canvas=False, silent=True)
+                                    cb_apply_pending(increment_canvas=True, silent=True)
                                 
                                 st.session_state["render_id"] += 1
-                                # NO EXPLICIT RERUN - Let Streamlit auto-detect state changes
-                                # safe_rerun(scope="fragment")
+                                safe_rerun(scope="fragment")
                         break 
             
             elif "Lasso" in tool_mode and "Polygonal" not in tool_mode:
