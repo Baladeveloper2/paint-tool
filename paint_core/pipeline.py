@@ -138,8 +138,8 @@ class RenderPipeline:
         lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=50, minLineLength=30, maxLineGap=10)
         if lines is not None:
             for line in lines:
-                x1, y1, x2, y2 = line[0]
-                cv2.line(lines_mask, (x1, y1), (x2, y2), 1, 3)
+                x1, y1, x2, y2 = line.flatten()[:4]
+                cv2.line(lines_mask, (int(x1), int(y1)), (int(x2), int(y2)), 1, 3)
         # Dilate lines to cover the frame thickness
         lines_mask = cv2.dilate(lines_mask, np.ones((5,5), np.uint8), iterations=1)
         h, w = image_rgb.shape[:2]
