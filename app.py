@@ -160,6 +160,10 @@ def main():
                     }
                     st.session_state["masks"].append(new_mask_entry)
                     st.session_state["render_id"] += 1
+                    
+                    # Need to increment canvas and rerun so the new paint shows up!
+                    st.session_state["canvas_id"] = st.session_state.get("canvas_id", 0) + 1
+                    st.rerun()
 
             else:
                  st.toast("⚠️ No object detected.", icon="🤷‍♂️")
@@ -291,11 +295,13 @@ def main():
                 mask = magic_wand_selection(img, (real_x, real_y), tolerance=st.session_state.get("wand_tolerance", 25))
                 if mask is not None and np.any(mask):
                     st.session_state["pending_selection"] = {'mask': mask, 'point': (real_x, real_y)}
-                    cb_apply_pending(increment_canvas=False, silent=True)
+                    from paint_utils.state_manager import cb_apply_pending
+                    cb_apply_pending(increment_canvas=True, silent=True)
                     st.session_state["render_id"] += 1
                 
                 if "tap" in st.query_params: 
                     del st.query_params["tap"]
+                st.rerun()
             except Exception as e:
                 print(f"DEBUG: Wand Error: {e}")
                 if "tap" in st.query_params: 
@@ -346,12 +352,14 @@ def main():
 
                 st.session_state["pending_selection"] = {'mask': mask, 'point': (real_x, real_y)}
                 st.session_state["selection_op"] = st.session_state.get("selection_op", "Add")
-                cb_apply_pending(increment_canvas=False, silent=True)
+                from paint_utils.state_manager import cb_apply_pending
+                cb_apply_pending(increment_canvas=True, silent=True)
                 st.session_state["render_id"] += 1
                 
              # Clear Param
              if "tap" in st.query_params: 
                  del st.query_params["tap"]
+             st.rerun()
         
         elif isinstance(async_status, dict) and async_status.get("status") == "error":
              st.error(f"Tap Error: {async_status.get('message')}")
@@ -401,11 +409,13 @@ def main():
                             st.session_state["pending_selection"] = {'mask': mask, 'point': (real_x, real_y)}
                             st.session_state["selection_op"] = st.session_state.get("selection_op", "Add")
                             # Instant apply for point clicks
-                            cb_apply_pending(increment_canvas=False, silent=True)
+                            from paint_utils.state_manager import cb_apply_pending
+                            cb_apply_pending(increment_canvas=True, silent=True)
                             st.session_state["render_id"] += 1
                         
                         if "tap" in st.query_params: 
                             del st.query_params["tap"]
+                        st.rerun()
 
                     else:
                         # FALLBACK -> Async Worker
