@@ -11,6 +11,8 @@ import logging
 # --- SILENCE DEPRECATION WARNINGS ---
 warnings.filterwarnings("ignore", category=FutureWarning, module="timm")
 warnings.filterwarnings("ignore", category=UserWarning, module="mobile_sam")
+warnings.filterwarnings("ignore", message=".*st.components.v1.html.*")
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 import numpy as np
 import cv2

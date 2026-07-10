@@ -983,9 +983,34 @@ def render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_
         
         if objects:
             print(f"DEBUG: Canvas Process -> Mode: {tool_mode}, Objects: {len(objects)} Types: {[o.get('type') for o in objects]}")
-            # Note: "AI Click" (Point) is natively handled by the async task in app.py via st.query_params["tap"]
+            # Desktop clicks are processed here via st_canvas objects, while Mobile taps are caught by app.py
             if "AI Click" in tool_mode:
-                pass
+                for obj in reversed(objects):
+                    if obj["type"] in ["circle", "path"]:
+                        rel_x, rel_y = obj["left"], obj["top"]
+                        real_x, real_y = int(rel_x / scale_factor) + start_x, int(rel_y / scale_factor) + start_y
+                        click_key = f"{real_x}_{real_y}_{st.session_state.get('picked_color', '')}"
+                        if click_key != st.session_state.get("last_click_global"):
+                            st.session_state["last_click_global"] = click_key
+                            sam.set_image(st.session_state["image"])
+                            current_tool = st.session_state.get("selection_tool", "")
+                            is_wall_click_mode = "Wall Click" in current_tool
+                            mask = sam.generate_mask(
+                                point_coords=[real_x, real_y], 
+                                level=st.session_state.get("mask_level", 0), 
+                                is_wall_only=st.session_state.get("is_wall_only", False),
+                                is_wall_click=is_wall_click_mode
+                            )
+                            if mask is not None:
+                                st.session_state["pending_selection"] = {'mask': mask, 'point': (real_x, real_y)}
+                                # CRITICAL: increment_canvas MUST be True, otherwise st_canvas will not redraw the new background!
+                                if st.session_state.get("ai_click_instant_apply", True): 
+                                    cb_apply_pending(increment_canvas=True, silent=True)
+                                
+                                st.session_state["render_id"] += 1
+                                # CRITICAL: Explicit rerun is required to push the new canvas_id to the frontend
+                                st.rerun()
+                        break 
             
             elif "Lasso" in tool_mode and "Polygonal" not in tool_mode:
                 for obj in reversed(objects):
