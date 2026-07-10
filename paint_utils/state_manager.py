@@ -156,7 +156,39 @@ def cb_apply_pending(increment_canvas=True, silent=False):
             if st.session_state["masks"]:
                 last_layer = st.session_state["masks"][-1]
                 
-                    # Auto-merge disabled per user request: each paint application gets its own layer.
+                # Check if we can merge (same color and properties)
+                if (last_layer.get("color") == new_mask["color"] and
+                    last_layer.get("finish") == new_mask["finish"] and
+                    last_layer.get("opacity") == new_mask["opacity"] and
+                    last_layer.get("visible", True) == True):
+                    
+                    print(f"DEBUG: ADD mode -> Merging with previous layer to prevent seams")
+                    
+                    # Get masks
+                    m1 = last_layer["mask"]
+                    m2 = new_mask["mask"]
+                    if sparse.issparse(m1): m1 = m1.toarray()
+                    if sparse.issparse(m2): m2 = m2.toarray()
+                    
+                    # Ensure matching dimensions
+                    if m1.shape != m2.shape:
+                        m2 = cv2.resize(m2.astype(np.uint8), (m1.shape[1], m1.shape[0]), interpolation=cv2.INTER_NEAREST) > 0
+                        
+                    # 1. Union the masks
+                    combined = (m1 > 0) | (m2 > 0)
+                    
+                    # 2. Morphological Closing to fill hairline seams and cracks between adjacent clicks
+                    # A 7x7 kernel perfectly seals 1-3 pixel gaps between SAM segments
+                    close_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+                    closed = cv2.morphologyEx(combined.astype(np.uint8), cv2.MORPH_CLOSE, close_k)
+                    
+                    # 3. Store back as sparse
+                    last_layer["mask"] = sparse.csc_matrix(closed > 0)
+                    merged = True
+                    
+                    # Invalidate layer cache for the merged layer
+                    if "flattened_cache" in st.session_state:
+                        st.session_state["flattened_cache"] = st.session_state["flattened_cache"][:-1]
                         
             if not merged:
                 print(f"DEBUG: ADD mode -> Creating new layer")
