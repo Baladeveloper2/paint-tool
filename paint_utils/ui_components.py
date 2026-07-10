@@ -959,7 +959,7 @@ def render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_
         p_box_json = str(p_box) if p_box else "null"
         
         js_config = f"<script>const cfg={{ CANVAS_WIDTH: {display_width}, CANVAS_HEIGHT: {display_height}, CUR_PAN_X: {st.session_state['pan_x']}, CUR_PAN_Y: {st.session_state['pan_y']}, ZOOM_LEVEL: {st.session_state.get('zoom_level', 1.0)}, VIEW_W: {view_w}, IMAGE_W: {w}, VIEW_H: {view_h}, IMAGE_H: {h}, DRAWING_MODE: '{drawing_mode}', PENDING_BOX: {p_box_json} }}; window.CANVAS_CONFIG=cfg; if(window.parent) window.parent.CANVAS_CONFIG=cfg;</script><script>{js_template}</script>"
-        components.html(js_config, height=0)
+        st.html(js_config)
 
     # 🔄 SYNC & PROCESS (Silent)
     # DEBUG: Force log raw canvas return
@@ -983,32 +983,10 @@ def render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_
         
         if objects:
             print(f"DEBUG: Canvas Process -> Mode: {tool_mode}, Objects: {len(objects)} Types: {[o.get('type') for o in objects]}")
-            if "AI Click" in tool_mode:
-                for obj in reversed(objects):
-                    if obj["type"] in ["circle", "path"]:
-                        rel_x, rel_y = obj["left"], obj["top"]
-                        real_x, real_y = int(rel_x / scale_factor) + start_x, int(rel_y / scale_factor) + start_y
-                        click_key = f"{real_x}_{real_y}_{st.session_state['picked_color']}"
-                        if click_key != st.session_state.get("last_click_global"):
-                            st.session_state["last_click_global"] = click_key
-                            sam.set_image(st.session_state["image"])
-                            current_tool = st.session_state.get("selection_tool", "")
-                            is_wall_click_mode = "Wall Click" in current_tool
-                            mask = sam.generate_mask(
-                                point_coords=[real_x, real_y], 
-                                level=st.session_state.get("mask_level", 0), 
-                                is_wall_only=st.session_state.get("is_wall_only", False),
-                                is_wall_click=is_wall_click_mode
-                            )
-                            if mask is not None:
-                                st.session_state["pending_selection"] = {'mask': mask, 'point': (real_x, real_y)}
-                                # ⚡ SMOOTH APPLY: Don't increment canvas_id to prevent flicker, silent mode
-                                if st.session_state.get("ai_click_instant_apply", True): 
-                                    cb_apply_pending(increment_canvas=True, silent=True)
-                                
-                                st.session_state["render_id"] += 1
-                                safe_rerun(scope="fragment")
-                        break 
+            # Note: "AI Click" (Point) is handled by the async task in app.py via st.query_params["tap"].
+            
+            if "Magic Wand" in tool_mode:
+                pass
             
             elif "Lasso" in tool_mode and "Polygonal" not in tool_mode:
                 for obj in reversed(objects):
