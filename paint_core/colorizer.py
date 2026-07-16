@@ -149,13 +149,16 @@ class ColorTransferEngine:
             else:
                 wall_anchor = float(np.percentile(L_base, 80))
             
-            # The l_shift represents the natural lighting variation (shadows, highlights)
-            l_shift = L_base - wall_anchor
+            # The lighting_ratio represents the natural lighting variation (shadows, highlights)
+            # Multiplicative lighting preserves deep shadows (like the 4 corners/edges of walls) 
+            # far more realistically than additive shifts.
+            lighting_ratio = L_base / (wall_anchor + 1e-5)
             
-            # Normalize the wall luminance tightly to the target color
-            # We compress the lighting variance slightly so shadows don't break the color
-            compressed_shift = np.where(l_shift < 0, l_shift * 0.7, l_shift)
-            new_L_base = tgt_L + compressed_shift
+            # Soften harsh highlights but strictly preserve deep shadows (ratio < 1.0)
+            lighting_ratio = np.where(lighting_ratio > 1.0, 1.0 + (lighting_ratio - 1.0) * 0.6, lighting_ratio)
+            
+            # Normalize the wall luminance to the target color while keeping realistic 3D depth
+            new_L_base = tgt_L * lighting_ratio
             
             # ── Apply Finishes ──────────────────────────────────────────────────
             finish = data.get('finish', 'Standard')

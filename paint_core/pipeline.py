@@ -193,7 +193,6 @@ class RenderPipeline:
         combined = np.clip(
             sky_mask.astype(np.int32) +
             is_glass_and_frames.astype(np.int32) +
-            is_dark_interior.astype(np.int32) +
             veg_mask.astype(np.int32) +
             car_mask.astype(np.int32),
             0, 1
