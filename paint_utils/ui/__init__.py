@@ -16,7 +16,7 @@ For backward compatibility, all exports remain available.
 
 # Delegate to original ui_components for full functionality
 # This maintains stability while modular structure is finalized
-from ..ui_components import (
+from paint_utils.ui_components import (
     st_canvas,
     setup_styles,
     sidebar_paint_fragment,

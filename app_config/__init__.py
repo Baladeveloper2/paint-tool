@@ -3,7 +3,7 @@ Configuration package for AI Paint Visualizer.
 Centralizes all tunable parameters and constants.
 """
 
-from .constants import (
+from app_config.constants import (
     SegmentationConfig,
     ColorizerConfig,
     UIConfig,
