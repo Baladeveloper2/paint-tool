@@ -149,6 +149,13 @@ class ColorTransferEngine:
 
             mask_bin = mask_bin.astype(np.float32)
 
+            # ── Fix SAM Under-segmentation ───────────────────────────────────────
+            # SAM often stops 1-2 pixels short of the true physical boundary.
+            # We dilate slightly to ensure the mask reaches the absolute edge. 
+            # The edge-aware guidedFilter below will safely snap it back to the true edge.
+            default_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            mask_bin = cv2.dilate(mask_bin, default_k)
+
             # Refinement
             if refinement != 0:
                 k  = abs(refinement) * 2 + 1
@@ -158,7 +165,9 @@ class ColorTransferEngine:
             # ── Edge-Aware Poisson-style Alpha Mask ──────────────────────────────
             user_soft = data.get('softness', 0)
             if hasattr(cv2, 'ximgproc'):
-                radius = 5 + (user_soft * 3)
+                # Base radius of 2 ensures sharp crisp edges against the sky/background.
+                # Previously radius=5 caused a wide blur that made edges semi-transparent.
+                radius = 2 + (user_soft * 3)
                 mask_soft = cv2.ximgproc.guidedFilter(
                     guide=gray_guide, 
                     src=mask_bin, 

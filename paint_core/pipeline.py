@@ -157,6 +157,11 @@ class RenderPipeline:
         sky_cand     = ((is_blue_hue & is_sky_v) | (is_cyan_hue & (V > 160))).astype(np.uint8)
         sky_mask     = sky_cand.copy()
         sky_mask[h // 2:, :] = 0   # sky only in upper half
+        
+        # Erode sky mask slightly to prevent it from eating into the anti-aliased 
+        # edges of buildings, which causes paint to stop before the absolute edge
+        sky_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        sky_mask = cv2.erode(sky_mask, sky_kernel, iterations=1)
 
         # ── Glass / Window / Mirror ──────────────────────────────────────────
         # Very bright + near-achromatic (S low) → reflective glass
