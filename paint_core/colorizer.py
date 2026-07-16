@@ -98,23 +98,58 @@ class ColorTransferEngine:
         # This prevents color stacking/mutation when repainting.
         curr_lab = img_lab.copy()
 
-        # ── Composite each layer ──────────────────────────────────────────────
+        # ── Group Adjacent Masks of Same Color to Fix Seams ─────────────────
+        grouped_masks = []
         for data in masks_data:
-            mask      = data.get('mask')
-            color_hex = data.get('color')
-            if mask is None or not color_hex:
+            if not data.get('visible', True): continue
+            
+            if not grouped_masks:
+                grouped_masks.append([data])
+            else:
+                last_group = grouped_masks[-1]
+                last_data = last_group[-1]
+                if (data.get('color') == last_data.get('color') and 
+                    data.get('finish') == last_data.get('finish') and
+                    data.get('opacity') == last_data.get('opacity')):
+                    grouped_masks[-1].append(data)
+                else:
+                    grouped_masks.append([data])
+
+        # ── Composite each grouped layer ────────────────────────────────────
+        for group in grouped_masks:
+            color_hex = group[0].get('color')
+            if not color_hex:
                 continue
 
-            if sparse.issparse(mask):
-                mask = mask.toarray()
+            combined_mask = None
+            refinement = group[0].get('refinement', 0)
+            user_soft = group[0].get('softness', 0)
+            
+            for data in group:
+                mask = data.get('mask')
+                if mask is None: continue
+                if sparse.issparse(mask): mask = mask.toarray()
+                if mask.shape[:2] != (h, w):
+                    mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
+                
+                if combined_mask is None:
+                    combined_mask = (mask > 0)
+                else:
+                    combined_mask = combined_mask | (mask > 0)
+                    
+            if combined_mask is None:
+                continue
 
-            if mask.shape[:2] != (h, w):
-                mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
+            mask_bin = combined_mask.astype(np.uint8)
+            
+            # SEAL SEAMS: If multiple adjacent layers of the same color exist, seal the hairline gaps
+            if len(group) > 1:
+                close_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+                mask_bin = cv2.morphologyEx(mask_bin, cv2.MORPH_CLOSE, close_k)
 
-            mask_bin = (mask > 0).astype(np.float32)
+            mask_bin = mask_bin.astype(np.float32)
 
             # Refinement
-            refinement = data.get('refinement', 0)
             if refinement != 0:
                 k  = abs(refinement) * 2 + 1
                 rk = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
