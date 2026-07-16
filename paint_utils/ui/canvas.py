@@ -45,7 +45,8 @@ def st_canvas(*args, **kwargs):
         
         # Performance: Cache key includes render_hash and comparison state
         comp_flag = str(st.session_state.get("show_comparison", False))
-        r_hash = str(st.session_state.get("render_id", 0))
+        img_path = str(st.session_state.get("image_path", ""))
+        r_hash = f"{img_path}_{st.session_state.get('render_id', 0)}"
         cache_key = f"bg_url_cache_{r_hash}_{comp_flag}"
         
         # Check cache first
