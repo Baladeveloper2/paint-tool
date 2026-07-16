@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import streamlit as st
 from PIL import Image
+from scipy import sparse
 from paint_core.colorizer import ColorTransferEngine
 from app_config.constants import UIConfig
 
