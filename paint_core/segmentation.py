@@ -117,7 +117,6 @@ class SegmentationEngine:
         if point_coords is not None:
             # Check input structure
             # Case 1: Single point [x, y] -> wrap to [[x, y]]
-            # Case 2: List of points [[x, y], ...] -> use as is
             
             arr = np.array(point_coords)
             if arr.ndim == 1:
