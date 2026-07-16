@@ -1,6 +1,6 @@
 import streamlit as st
-from .ui_components import TOOL_MAPPING
-from .state_manager import cb_undo, cb_redo, cb_apply_pending, cb_cancel_pending, preserve_sidebar_state
+from paint_utils.ui_components import TOOL_MAPPING
+from paint_utils.state_manager import cb_undo, cb_redo, cb_apply_pending, cb_cancel_pending, preserve_sidebar_state
 
 def render_mobile_toolbar():
     """

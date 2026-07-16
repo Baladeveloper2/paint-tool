@@ -7,7 +7,7 @@ to handle background image conversion to data URLs with caching for performance.
 
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas as raw_st_canvas
-from ..encoding import image_to_url_patch
+from paint_utils.encoding import image_to_url_patch
 
 
 def st_canvas(*args, **kwargs):

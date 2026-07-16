@@ -4,7 +4,7 @@ import cv2
 import logging
 from mobile_sam import sam_model_registry, SamPredictor
 from app_config.constants import SegmentationConfig
-from .pipeline import RenderPipeline
+from paint_core.pipeline import RenderPipeline
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -117,7 +117,7 @@ class SegmentationEngine:
         if point_coords is not None:
             # Check input structure
             # Case 1: Single point [x, y] -> wrap to [[x, y]]
-            
+
             arr = np.array(point_coords)
             if arr.ndim == 1:
                 sam_point_coords = np.array([point_coords])

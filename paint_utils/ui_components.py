@@ -14,14 +14,14 @@ import textwrap
 from PIL import Image
 from streamlit_drawable_canvas import st_canvas as raw_st_canvas
 from streamlit_image_comparison import image_comparison
-from .encoding import image_to_url_patch
-from .state_manager import cb_undo, cb_redo, cb_clear_all, cb_delete_layer, cb_apply_pending, cb_cancel_pending, preserve_sidebar_state
-from .image_processing import (
+from paint_utils.encoding import image_to_url_patch
+from paint_utils.state_manager import cb_undo, cb_redo, cb_clear_all, cb_delete_layer, cb_apply_pending, cb_cancel_pending, preserve_sidebar_state
+from paint_utils.image_processing import (
     get_crop_params, safe_composite_pipeline, process_lasso_path,
     get_display_base_image, to_grayscale_rgb
 )
-from .sam_loader import get_sam_engine, CHECKPOINT_PATH, MODEL_TYPE
-from .performance import cleanup_session_caches
+from paint_utils.sam_loader import get_sam_engine, CHECKPOINT_PATH, MODEL_TYPE
+from paint_utils.performance import cleanup_session_caches
 
 # --- UI CONSTANTS ---
 TOOL_MAPPING = {
@@ -1246,7 +1246,7 @@ def render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_
                                     scaled_path.append(scaled_cmd)
                             
                             # Use existing path processor but enforce STROKE rendering
-                            from .image_processing import process_lasso_path
+                            from paint_utils.image_processing import process_lasso_path
                             stroke_width = st.session_state.get("lasso_thickness", 20)
                             
                             # Render the stroke into a mask
@@ -1327,7 +1327,7 @@ def render_visualizer_canvas_fragment_v11(display_width, start_x, start_y, view_
                          if click_key != st.session_state.get("last_click_global"):
                              st.session_state["last_click_global"] = click_key
                              
-                             from .image_processing import magic_wand_selection
+                             from paint_utils.image_processing import magic_wand_selection
                              mask = magic_wand_selection(st.session_state["image"], (real_x, real_y), tolerance=20)
                              
                              if mask is not None and mask.any():

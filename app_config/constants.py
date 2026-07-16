@@ -56,6 +56,9 @@ class SegmentationConfig:
     # Maximum area for noise filtering (0.3% of image area)
     NOISE_AREA_THRESHOLD = 0.003
     
+    # Kernel size for Gaussian Blurring in feature pre-computation
+    GAUSSIAN_KERNEL_SIZE = (5, 5)
+    
     # --- Distance Decay Parameters ---
     # Maximum distance (pixels) before tolerance starts decaying
     # OPTIMIZED: Effectively disabled for standard rooms to ensure full coverage.
