@@ -1513,7 +1513,9 @@ def render_sidebar(sam, device_str):
         if uploaded_file is not None:
             # We enforce reprocessing if the file_key changes OR if `image` state is None 
             # (which happens if they wiped out state but Streamlit kept the uploaded_file instance natively)
-            file_key = getattr(uploaded_file, "file_id", f"{uploaded_file.name}_{uploaded_file.size}")
+            # Use a stable file key based on name and size, because Streamlit Cloud's internal file_id 
+            # can regenerate unexpectedly on button clicks (like Download), causing accidental wipes.
+            file_key = f"{uploaded_file.name}_{uploaded_file.size}"
             
             if st.session_state.get("image_path") != file_key or st.session_state.get("image") is None:
                 st.toast(f"📸 Loading New Image: {uploaded_file.name}", icon="🔄")
