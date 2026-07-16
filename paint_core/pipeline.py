@@ -125,23 +125,35 @@ class RenderPipeline:
         # Window frames have strong structural lines.
         gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
         
-        # Calculate local variance (texture energy)
+        # Calculate local variance (macro texture)
         blur_gray = cv2.GaussianBlur(gray, (5, 5), 0)
         sq_gray = cv2.multiply(blur_gray, blur_gray)
         blur_sq = cv2.GaussianBlur(sq_gray, (5, 5), 0)
         blur_gray_sq = cv2.multiply(blur_gray, blur_gray)
         variance = cv2.subtract(blur_sq, blur_gray_sq)
+
+        # Calculate fine texture (Laplacian) to catch thin window slats / grilles
+        laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+        fine_texture = cv2.convertScaleAbs(laplacian)
+        is_fine_structure = (fine_texture > 40).astype(np.uint8)
         
         # ── Structural Line Detection (Window Frames) ───────────────────────
-        edges = cv2.Canny(blur_gray, 50, 150)
+        # Use a much smaller blur to preserve thin slats
+        blur_gray_edges = cv2.GaussianBlur(gray, (3, 3), 0)
+        edges = cv2.Canny(blur_gray_edges, 30, 100)
+        
         lines_mask = np.zeros((h, w), dtype=np.uint8)
-        lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=50, minLineLength=30, maxLineGap=10)
+        # Lower thresholds dramatically to catch small slatted wood details
+        lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=25, minLineLength=10, maxLineGap=15)
         if lines is not None:
             for line in lines:
                 x1, y1, x2, y2 = line.flatten()[:4]
-                cv2.line(lines_mask, (int(x1), int(y1)), (int(x2), int(y2)), 1, 3)
-        # Dilate lines to cover the frame thickness
-        lines_mask = cv2.dilate(lines_mask, np.ones((5,5), np.uint8), iterations=1)
+                cv2.line(lines_mask, (int(x1), int(y1)), (int(x2), int(y2)), 1, 4)
+        
+        # Combine lines and fine texture, then dilate aggressively to form solid blocks over slats
+        combined_structure = cv2.bitwise_or(lines_mask, is_fine_structure)
+        lines_mask = cv2.dilate(combined_structure, np.ones((9,9), np.uint8), iterations=2)
+        
         h, w = image_rgb.shape[:2]
 
         hsv = self._hsv_image.astype(np.float32)
@@ -174,7 +186,10 @@ class RenderPipeline:
         is_glass_and_frames = np.logical_or(is_glass, lines_mask).astype(np.uint8)
 
         # ── Dark interiors (door openings, window depths) ────────────────────
-        is_dark_interior = ((V < 35) & (S < 60)).astype(np.uint8)
+        # To avoid excluding dark smooth wall corners, we only exclude dark areas 
+        # that also have high structural texture (slats) OR are pitch black.
+        is_dark_color = ((V < 35) & (S < 60)).astype(np.uint8)
+        is_dark_interior = (is_dark_color & ((V < 20) | (variance > 20) | lines_mask)).astype(np.uint8)
 
         # ── Vegetation (trees, bushes, grass) ───────────────────────────────
         # Green hue + enough saturation to distinguish from muted wall green
@@ -198,6 +213,7 @@ class RenderPipeline:
         combined = np.clip(
             sky_mask.astype(np.int32) +
             is_glass_and_frames.astype(np.int32) +
+            is_dark_interior.astype(np.int32) +
             veg_mask.astype(np.int32) +
             car_mask.astype(np.int32),
             0, 1
