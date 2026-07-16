@@ -1515,11 +1515,7 @@ def render_sidebar(sam, device_str):
             # (which happens if they wiped out state but Streamlit kept the uploaded_file instance natively)
             file_key = getattr(uploaded_file, "file_id", f"{uploaded_file.name}_{uploaded_file.size}")
             
-            # If user previously cleared the uploader, force a reload even for the same image
-            uploader_cleared = st.session_state.get("uploader_was_cleared", False)
-            
-            if st.session_state.get("image_path") != file_key or st.session_state.get("image") is None or uploader_cleared:
-                st.session_state["uploader_was_cleared"] = False
+            if st.session_state.get("image_path") != file_key or st.session_state.get("image") is None:
                 st.toast(f"📸 Loading New Image: {uploaded_file.name}", icon="🔄")
                 uploaded_file.seek(0)
                 file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
@@ -1556,9 +1552,8 @@ def render_sidebar(sam, device_str):
         
         # Auto-reset logic REMOVED to prevent accidental clearing during reruns.
         # Users must use the "Reset Project / Clear All" button inside the expander.
-        elif uploaded_file is None:
-            # User clicked 'X' on the uploader. Mark it as cleared so re-uploading the same file works.
-            st.session_state["uploader_was_cleared"] = True 
+        elif uploaded_file is None and st.session_state.get("image") is not None:
+            pass
 
         if st.session_state.get("image") is None:
              st.markdown("<div style='background:#f3f4f6; padding:15px; border-radius:10px; border:1px dashed #d1d5db; margin:10px 0;'><p style='margin:0; font-size:0.85rem; color:#4b5563; line-height:1.4;'><b>Ready to paint?</b><br>Upload a photo of your wall or room to begin.</p></div>", unsafe_allow_html=True)
